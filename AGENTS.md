@@ -1,6 +1,6 @@
 # clicky.rs
 
-Rust project. Early stage: no code yet.
+Rust workspace for Clicky, a macOS menu bar app. Module map and per-ticket guide: `docs/architecture.md`.
 
 ## Agent skills
 
