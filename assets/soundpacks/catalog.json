@@ -1,0 +1,5 @@
+{
+  "packs": [
+    { "id": "cherry-mx-brown-pbt", "name": "Cherry MX Brown", "variant": "PBT", "switch_type": "tactile", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-brown-pbt" } }
+  ]
+}
