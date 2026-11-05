@@ -10,22 +10,19 @@ concurrency:
   cancel-in-progress: true
 jobs:
   check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # Skip the cargo steps until the crate exists.
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        if: hashFiles('Cargo.toml') != ''
         with:
           components: rustfmt, clippy
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        if: hashFiles('Cargo.toml') != ''
       - run: cargo fmt --check
-        if: hashFiles('Cargo.toml') != ''
-      - run: cargo clippy --all-targets -- -D warnings
-        if: hashFiles('Cargo.toml') != ''
-      - run: cargo test
-        if: hashFiles('Cargo.toml') != ''
-      - run: cargo build
-        if: hashFiles('Cargo.toml') != ''
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked
+      # Universal (arm64 + x86_64) Clicky.app; CI has no signing identity, so ad-hoc.
+      - run: cargo xtask bundle --adhoc
+      - run: lipo -archs target/bundle/Clicky.app/Contents/MacOS/Clicky
