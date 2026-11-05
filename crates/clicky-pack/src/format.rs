@@ -59,6 +59,8 @@ pub struct Meta {
     pub switch_type: String,
     /// Who recorded the sounds, and the licence.
     pub credit: String,
+    /// Position in the catalog, which orders the packs within a switch type.
+    pub order: u32,
 }
 
 impl Meta {
@@ -73,8 +75,9 @@ impl Meta {
             ("switch_type", &self.switch_type),
             ("credit", &self.credit),
         ];
+        let order = self.order.to_string();
         let mut out = String::new();
-        for (key, value) in fields {
+        for (key, value) in fields.into_iter().chain([("order", &order)]) {
             if value.contains(['\n', '\r']) {
                 return Err(FormatError::BadMeta);
             }
@@ -98,6 +101,7 @@ impl Meta {
                 "variant" => meta.variant = value,
                 "switch_type" => meta.switch_type = value,
                 "credit" => meta.credit = value,
+                "order" => meta.order = value.parse().map_err(|_| FormatError::BadMeta)?,
                 _ => {} // Unknown keys are ignored so newer writers stay readable.
             }
         }
@@ -106,6 +110,18 @@ impl Meta {
         }
         Ok(meta)
     }
+}
+
+/// Bytes of a pack file that [`Pack::info_len`] needs to see.
+pub const INFO_HEADER_LEN: usize = HEADER_LEN;
+
+/// What the soundpack picker shows, read without the audio ([`Pack::info`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackInfo {
+    pub meta: Meta,
+    pub sample_rate: u32,
+    /// Whether any key has a release sound (Key Release Sounds is unavailable otherwise).
+    pub has_release: bool,
 }
 
 /// Why a pack could not be written or read.
@@ -237,6 +253,44 @@ impl Pack {
         Ok(out)
     }
 
+    /// Reads only the description of a pack from the start of its file, without
+    /// its audio. `prefix` must hold at least [`Pack::info_len`] bytes.
+    pub fn info(prefix: &[u8]) -> Result<PackInfo, FormatError> {
+        let needed = Pack::info_len(prefix)?;
+        if prefix.len() < needed {
+            return Err(FormatError::TooShort);
+        }
+        let clip_count = read_u32(prefix, 12) as usize;
+        let meta_offset = CLIPS_OFFSET + clip_count * CLIP_ENTRY_LEN;
+        let meta = Meta::decode(&prefix[meta_offset..needed])?;
+        let flags = read_u16(prefix, 6);
+        Ok(PackInfo {
+            meta,
+            sample_rate: read_u32(prefix, 8),
+            has_release: flags & FLAG_HAS_RELEASE != 0,
+        })
+    }
+
+    /// How many bytes from the start of a pack file [`Pack::info`] needs, given
+    /// at least the first [`INFO_HEADER_LEN`] bytes.
+    pub fn info_len(header: &[u8]) -> Result<usize, FormatError> {
+        if header.len() < INFO_HEADER_LEN {
+            return Err(FormatError::TooShort);
+        }
+        if header[0..4] != MAGIC {
+            return Err(FormatError::BadMagic);
+        }
+        let version = read_u16(header, 4);
+        if version != VERSION {
+            return Err(FormatError::UnsupportedVersion(version));
+        }
+        let clip_count = read_u32(header, 12) as usize;
+        if clip_count >= usize::from(NO_CLIP) {
+            return Err(FormatError::TooManyClips);
+        }
+        Ok(CLIPS_OFFSET + clip_count * CLIP_ENTRY_LEN + read_u32(header, 20) as usize)
+    }
+
     /// Parses and validates a serialised pack.
     pub fn from_bytes(bytes: &[u8]) -> Result<Pack, FormatError> {
         if bytes.len() < CLIPS_OFFSET {
@@ -330,6 +384,7 @@ mod tests {
             variant: "PBT".into(),
             switch_type: "tactile".into(),
             credit: "unit test".into(),
+            order: 3,
         }
     }
 
@@ -393,11 +448,35 @@ mod tests {
     }
 
     #[test]
+    fn info_reads_the_description_from_the_start_of_the_file_only() {
+        let pack = Pack { meta: Meta { order: 7, ..meta() }, ..sample_pack() };
+        let bytes = pack.to_bytes().unwrap();
+        let needed = Pack::info_len(&bytes[..INFO_HEADER_LEN]).unwrap();
+        assert!(needed < bytes.len(), "the audio is not needed");
+        let info = Pack::info(&bytes[..needed]).unwrap();
+        assert_eq!(info.meta, pack.meta);
+        assert_eq!(info.meta.order, 7);
+        assert_eq!(info.sample_rate, 44_100);
+        assert!(info.has_release);
+        assert_eq!(Pack::info(&bytes[..needed - 1]), Err(FormatError::TooShort));
+        assert_eq!(Pack::info_len(b"nope"), Err(FormatError::TooShort));
+        assert_eq!(Pack::info_len(&[0; INFO_HEADER_LEN]), Err(FormatError::BadMagic));
+    }
+
+    #[test]
+    fn metadata_without_an_order_reads_as_first() {
+        let meta = Meta::decode(b"id=x\nname=X\n").unwrap();
+        assert_eq!(meta.order, 0);
+        assert_eq!(Meta::decode(b"id=x\norder=soon\n"), Err(FormatError::BadMeta));
+    }
+
+    #[test]
     fn a_pack_without_release_sounds_says_so() {
         let mut press = [None; KEY_SLOTS];
         press[0] = Some(0);
         let pack = Pack::new(meta(), 48_000, &[vec![5, 6]], press, [None; KEY_SLOTS]).unwrap();
-        let parsed = Pack::from_bytes(&pack.to_bytes().unwrap()).unwrap();
-        assert!(!parsed.has_release());
+        let bytes = pack.to_bytes().unwrap();
+        assert!(!Pack::from_bytes(&bytes).unwrap().has_release());
+        assert!(!Pack::info(&bytes).unwrap().has_release);
     }
 }
