@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use super::device::{self, Transport};
-use super::hal::{self, DeviceId, OsError, check};
+use super::hal::{self, DeviceId, OsError, OutputFormat, check};
 use super::lifecycle::Trigger;
 use super::{ffi, signals};
 use crate::engine::Shared;
@@ -148,7 +148,7 @@ pub struct Started {
 struct Bound {
     device: DeviceId,
     rate: f64,
-    format: Option<(f64, u32, u32)>,
+    format: Option<OutputFormat>,
 }
 
 /// The output unit. Lives on the audio control thread.
