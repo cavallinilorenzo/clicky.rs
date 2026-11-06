@@ -40,6 +40,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = [
 ] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
+    "block2",
     "objc2-core-foundation",
     "NSArray",
     "NSBundle",
@@ -47,6 +48,7 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "NSGeometry",
     "NSNotification",
     "NSObject",
+    "NSOperation",
     "NSString",
     "NSURL",
     "NSUserDefaults",

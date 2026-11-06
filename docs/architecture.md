@@ -32,7 +32,10 @@ input (CGEventTap, listen-only)            │
   no allocation, no logging. It records the first render after each start.
 - The **audio control thread** owns the output. It sleeps while cold. A key press
   while cold wakes it; it starts the output (the press waits in the ring and plays
-  on the first render). While warm it wakes only at the hold-window deadline.
+  on the first render, after the pre-roll on Bluetooth). While warm it wakes only
+  at the hold-window deadline and the watchdog check. CoreAudio listeners and the
+  sleep/wake observers only set a bit in `audio::signals` and unpark it; it then
+  fades out and rebuilds the output at the device's current format.
 - The **main thread** runs the menu. The on/off switch writes `Shared` and the
   settings; turning sounds off makes the mixer ramp to silence within one block.
 - Soundpacks are built at build time (`cargo xtask packs`) from the committed
@@ -51,13 +54,17 @@ input (CGEventTap, listen-only)            │
 | `engine/mod.rs` | `Shared` atomics, `Kick`, `Voicer`; `SOUNDS_ON` setting, `MASTER_GAIN`. | yes |
 | `engine/ring.rs` | Wait-free SPSC ring. | yes |
 | `engine/mixer.rs` | Voice pool, resampling, master-gain ramp, clamp. | yes |
-| `audio/lifecycle.rs` | ADR 0001 policy as a pure state machine (cold / starting / warm, hold window); time is passed in. | yes |
-| `audio/mod.rs` | The control thread: drives the lifecycle against the output, logs start/stop. | |
-| `audio/output.rs` | CoreAudio adapter: AUHAL unit, render callback, `allow_system_sleep`. | |
+| `audio/lifecycle.rs` | ADR 0001 policy as a pure state machine (cold / starting / warm, hold window, rebuild triggers, sleep/wake, watchdog); time and render counts are passed in. | yes |
+| `audio/device.rs` | Transport kinds and what they imply: small buffer only on built-in, `BLUETOOTH_PRE_ROLL` (provisional) only on Bluetooth. | yes |
+| `audio/mod.rs` | The control thread: drives the lifecycle against the output, confirms device signals, logs every start, stop, rebuild and trigger with its cause and first-render time. | |
+| `audio/signals.rs` | Signal bits from CoreAudio listeners and sleep/wake to the control thread (set a bit, unpark). | yes |
+| `audio/hal.rs` | CoreAudio HAL queries (default device, transport, rate, format, buffer), `allow_system_sleep`, property listeners. | |
+| `audio/power.rs` | `NSWorkspace` will-sleep / did-wake observers. | |
+| `audio/output.rs` | CoreAudio adapter: AUHAL unit bound to the current default device at its current rate, render callback with pre-roll and fade-out, rebuild. | yes (render state) |
 | `audio/ffi.rs`, `input/ffi.rs` | Hand-written FFI (AudioToolbox, CoreAudio, CoreGraphics, CoreFoundation). | layout tests |
 | `input/mod.rs` | The listen-only event tap thread (key down/up, flags-changed, system-defined) and its minimal permission retry. | |
 | `input/media.rs` | Media keys: reads a system-defined event's subtype and `data1` through `NSEvent` (the tap thread's only Objective-C call). | yes (decode, real NSEvent round trip) |
-| `selftest.rs` | `--self-test`: exercises the audio path without the key listener. | |
+| `selftest.rs` | `--self-test`: exercises the audio path without the key listener (cold start, rebuild while warm, hold window, second cold start). | |
 | `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`. | |
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
 | `ui/status_item.rs` | The menu bar icon and its states. | yes (state) |
