@@ -22,6 +22,7 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some("--menu") => ui::print_menu(),
         // Anything else (including LaunchServices' legacy -psn_ argument) starts the app.
         _ => app::run(),
     }

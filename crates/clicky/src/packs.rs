@@ -417,22 +417,25 @@ pub(crate) mod tests {
         assert_eq!(library.get("topre").unwrap().title(), "Switch topre");
     }
 
-    /// The packs `cargo xtask packs` built, when present: all 21, grouped 9/7/5.
+    /// The committed catalog (what `cargo xtask packs` builds and the bundle
+    /// ships): all 21 packs, grouped 9/7/5 by switch types this app knows, with
+    /// the default among them. Reads only committed files, so it needs no
+    /// prior build and cannot see stale output in `target/packs`.
     #[test]
-    fn the_built_library_has_every_bundled_pack() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/packs");
-        let library = Library::scan(&[dir]);
-        if library.entries().is_empty() {
-            eprintln!("skipped: run `cargo xtask packs` first");
-            return;
+    fn the_catalog_has_every_bundled_pack_and_the_default() {
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/soundpacks/catalog.json");
+        let catalog: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let packs = catalog["packs"].as_array().unwrap();
+        let mut counts = [0; 3];
+        for pack in packs {
+            let switch_type = pack["switch_type"].as_str().unwrap();
+            let group = SwitchType::from_id(switch_type)
+                .unwrap_or_else(|| panic!("unknown switch type {switch_type:?}"));
+            counts[group as usize] += 1;
         }
-        let counts: Vec<(SwitchType, usize)> =
-            library.groups().iter().map(|(t, e)| (*t, e.len())).collect();
-        assert_eq!(
-            counts,
-            [(SwitchType::Linear, 9), (SwitchType::Tactile, 7), (SwitchType::Clicky, 5)]
-        );
-        assert_eq!(library.resolve("").map(Entry::id), Some(DEFAULT_PACK));
-        assert!(library.problems.is_empty(), "{:?}", library.problems);
+        assert_eq!(counts, [9, 7, 5], "Linear, Tactile, Clicky");
+        assert!(packs.iter().any(|p| p["id"] == DEFAULT_PACK), "{DEFAULT_PACK} is bundled");
     }
 }

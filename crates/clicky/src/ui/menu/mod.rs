@@ -14,11 +14,12 @@ mod volume;
 
 use std::rc::Rc;
 
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol, ProtocolObject};
+use objc2::{ClassType, MainThreadMarker};
 use objc2_app_kit::{
     NSControlStateValue, NSControlStateValueOff, NSControlStateValueOn, NSMenu, NSMenuItem,
+    NSSlider, NSSwitch,
 };
 use objc2_foundation::NSString;
 
@@ -29,7 +30,14 @@ use super::target::{ActionTarget, MenuDelegate};
 pub struct Menu {
     pub menu: Retained<NSMenu>,
     _targets: Vec<Retained<ActionTarget>>,
-    _delegate: Retained<MenuDelegate>,
+    delegate: Retained<MenuDelegate>,
+}
+
+impl Menu {
+    /// Refreshes every section as when the menu opens (Option not held).
+    pub fn refresh(&self) {
+        self.delegate.will_open();
+    }
 }
 
 /// Builds the menu. Sections in the order of issue #2; later tickets insert theirs
@@ -111,8 +119,37 @@ impl MenuBuilder {
         let hooks = self.on_open;
         let delegate = MenuDelegate::new(self.ui.mtm, move || hooks.iter().for_each(|f| f()));
         self.menu.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        Menu { menu: self.menu, _targets: self.targets, _delegate: delegate }
+        Menu { menu: self.menu, _targets: self.targets, delegate: delegate }
     }
+}
+
+/// One line per item of `menu`, top to bottom, for `Clicky --menu`: `---` for
+/// a separator, `<switch>` / `<slider>` for a row holding that control,
+/// `<submenu>` for an item that opens one, else its title; `[hidden] ` before
+/// items not shown right now.
+pub fn describe(menu: &NSMenu) -> Vec<String> {
+    let holds = |item: &NSMenuItem, class: &AnyClass| {
+        item.view()
+            .is_some_and(|view| view.subviews().to_vec().iter().any(|v| v.isKindOfClass(class)))
+    };
+    menu.itemArray()
+        .to_vec()
+        .into_iter()
+        .map(|item| {
+            let text = if item.isSeparatorItem() {
+                "---".to_owned()
+            } else if holds(&item, NSSwitch::class()) {
+                "<switch>".to_owned()
+            } else if holds(&item, NSSlider::class()) {
+                "<slider>".to_owned()
+            } else if item.hasSubmenu() {
+                "<submenu>".to_owned()
+            } else {
+                item.title().to_string()
+            };
+            if item.isHidden() { format!("[hidden] {text}") } else { text }
+        })
+        .collect()
 }
 
 pub fn control_state(on: bool) -> NSControlStateValue {
