@@ -2,9 +2,11 @@
 //! items, actions and refresh hook through [`MenuBuilder`]; `build` only lists
 //! the sections in menu order.
 
+mod about;
 mod diagnostics;
 mod quit;
 mod sound_switch;
+mod soundpack;
 
 use std::rc::Rc;
 
@@ -31,11 +33,11 @@ pub struct Menu {
 pub fn build(ui: &Rc<Ui>) -> Menu {
     let mut menu = MenuBuilder::new(ui);
     sound_switch::add(&mut menu);
-    // #7: soundpack picker
+    soundpack::add(&mut menu); // #7: soundpack picker
     // #6: volume slider
     // #8: Key Release Sounds, Natural Variation, Spatial Stereo
     // #9: Launch at Login (and the permission row)
-    // #7: About
+    about::add(&mut menu); // #7: About
     diagnostics::add(&mut menu);
     quit::add(&mut menu);
     menu.finish()

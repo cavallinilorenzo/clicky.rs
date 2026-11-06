@@ -39,7 +39,11 @@ input (CGEventTap, listen-only)            │
 - The **main thread** runs the menu. The on/off switch writes `Shared` and the
   settings; turning sounds off makes the mixer ramp to silence within one block.
 - Soundpacks are built at build time (`cargo xtask packs`) from the committed
-  source audio and loaded at launch from `Clicky.app/Contents/Resources/Packs`.
+  source audio. At launch the app reads every pack's description from
+  `Clicky.app/Contents/Resources/Packs` and the audio of the saved one; a pack's
+  audio is read the first time it is picked and kept for the life of the process.
+- The **preview thread** plays the pick preview through its own `Voicer` and ring,
+  drained by the render callback after the key ring.
 
 ## Module map (`crates/clicky/src`)
 
@@ -50,9 +54,10 @@ input (CGEventTap, listen-only)            │
 | `settings.rs` | Typed `Setting<T>` + `Store` over `NSUserDefaults` (in-memory backend for tests). Each feature declares its own `Setting` const next to its code. | yes |
 | `diagnostics.rs` | The optional log: the `Event` enum (no key data, by construction), line formatting, the file logger. `LOG_ENABLED` setting. | yes |
 | `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition`, `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input logged once per kind). | yes |
-| `packs.rs` | Finding and loading `.clickypack` files; `DEFAULT_PACK`. | yes |
-| `engine/mod.rs` | `Shared` atomics, `Kick`, `Voicer`; `SOUNDS_ON` setting, `MASTER_GAIN`. | yes |
-| `engine/ring.rs` | Wait-free SPSC ring. | yes |
+| `packs.rs` | The `Library` of bundled soundpacks (descriptions read at launch, audio on first use, never freed), grouped by `SwitchType`; `load_saved` (saved id → default → first that loads); `DEFAULT_PACK`, `SELECTED_PACK` setting. | yes |
+| `engine/mod.rs` | `Shared` atomics (including the current soundpack, an `AtomicPtr` swapped by the picker), `Kick`, `Voicer`; `SOUNDS_ON` setting, `MASTER_GAIN`. | yes |
+| `engine/preview.rs` | The pick preview: its own thread, `Voicer` and ring press a short "rust ⏎" from the current soundpack; picking again restarts it. | yes |
+| `engine/ring.rs` | Wait-free SPSC ring; `Consumer::with_producer` chains a second ring (the preview's) into the same consumer. | yes |
 | `engine/mixer.rs` | Voice pool, resampling, master-gain ramp, clamp. | yes |
 | `audio/lifecycle.rs` | ADR 0001 policy as a pure state machine (cold / starting / warm, hold window, rebuild triggers, sleep/wake, watchdog); time and render counts are passed in. | yes |
 | `audio/device.rs` | Transport kinds and what they imply: small buffer only on built-in, `BLUETOOTH_PRE_ROLL` (provisional) only on Bluetooth. | yes |
@@ -69,11 +74,12 @@ input (CGEventTap, listen-only)            │
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
 | `ui/status_item.rs` | The menu bar icon and its states. | yes (state) |
 | `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order. | |
-| `ui/menu/sound_switch.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. | |
+| `ui/menu/sound_switch.rs`, `soundpack.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
 
-`crates/xtask/src`: `catalog.rs` (which packs ship), `sources/` (one adapter per
-source layout: `mechvibes.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),
-`packs.rs` (pipeline + invariants), `bundle.rs` (universal build, Info.plist,
+`crates/xtask/src`: `catalog.rs` (which packs ship, in menu order), `sources/` (one adapter per
+source layout: `mechvibes.rs`, `kbsim.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),
+`loudness.rs` (K-weighted 100 ms attack loudness), `packs.rs` (pipeline + invariants, incl. the
+all-21-packs loudness/onset test), `bundle.rs` (universal build, Info.plist,
 bundle layout), `sign.rs` (ADR 0002 signing).
 
 ## Where each follow-up ticket works

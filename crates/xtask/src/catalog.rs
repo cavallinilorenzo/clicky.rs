@@ -13,6 +13,8 @@ pub const SWITCH_TYPES: [&str; 3] = ["linear", "tactile", "clicky"];
 pub enum SourceKind {
     /// A Mechvibes `config.json` plus one sprite file.
     Mechvibes,
+    /// kbsim: `press/GENERIC_R0..4` per row plus special keys, and `release/`.
+    Kbsim,
 }
 
 #[derive(Clone, Debug)]
@@ -60,6 +62,7 @@ pub fn parse(text: &str, base: &Path) -> crate::Result<Catalog> {
         let source = pack.get("source").ok_or_else(|| format!("{ctx}: missing source"))?;
         let kind = match string(source, "kind", &ctx)?.as_str() {
             "mechvibes" => SourceKind::Mechvibes,
+            "kbsim" => SourceKind::Kbsim,
             other => return Err(format!("{ctx}: unknown source kind {other:?}")),
         };
         entries.push(Entry {
@@ -92,7 +95,7 @@ mod tests {
 
     const SAMPLE: &str = r##"{ "packs": [
       {"id":"a","name":"A","switch_type":"linear","credit":"X","source":{"kind":"mechvibes","dir":"mechvibes/a"}},
-      {"id":"b","name":"B","variant":"PBT","switch_type":"clicky","credit":"Y","source":{"kind":"mechvibes","dir":"mechvibes/b"}}
+      {"id":"b","name":"B","variant":"PBT","switch_type":"clicky","credit":"Y","source":{"kind":"kbsim","dir":"kbsim/b"}}
     ] }"##;
 
     #[test]
@@ -103,7 +106,8 @@ mod tests {
         assert_eq!(catalog.entries[0].variant, "");
         assert_eq!(catalog.entries[1].variant, "PBT");
         assert_eq!(catalog.entries[1].switch_type, "clicky");
-        assert_eq!(catalog.entries[1].kind, SourceKind::Mechvibes);
+        assert_eq!(catalog.entries[0].kind, SourceKind::Mechvibes);
+        assert_eq!(catalog.entries[1].kind, SourceKind::Kbsim);
     }
 
     #[test]
@@ -131,7 +135,10 @@ mod tests {
     fn shipped_catalog_points_at_committed_sources() {
         let path = crate::workspace_root().join("assets/soundpacks/catalog.json");
         let catalog = load(&path).unwrap();
+        assert_eq!(catalog.entries.len(), 21, "the 21 soundpacks of issue #2");
         assert!(catalog.entries.iter().any(|e| e.id == "cherry-mx-brown-pbt"));
+        let kbsim = catalog.entries.iter().filter(|e| e.kind == SourceKind::Kbsim).count();
+        assert_eq!(kbsim, 10);
         for entry in &catalog.entries {
             assert!(entry.dir.is_dir(), "{} is missing {}", entry.id, entry.dir.display());
         }

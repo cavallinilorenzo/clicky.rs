@@ -36,6 +36,8 @@ pub struct Producer<T> {
 pub struct Consumer<T> {
     inner: Arc<Inner<T>>,
     cached_tail: usize,
+    /// Another ring this consumer drains after its own (see [`Consumer::with_producer`]).
+    next: Option<Box<Consumer<T>>>,
 }
 
 /// Creates a ring holding at least `capacity` items (rounded up to a power of two).
@@ -48,7 +50,10 @@ pub fn ring<T: Copy + Send>(capacity: usize) -> (Producer<T>, Consumer<T>) {
         mask: capacity - 1,
         slots,
     });
-    (Producer { inner: inner.clone(), cached_head: 0 }, Consumer { inner, cached_tail: 0 })
+    (
+        Producer { inner: inner.clone(), cached_head: 0 },
+        Consumer { inner, cached_tail: 0, next: None },
+    )
 }
 
 impl<T: Copy + Send> Producer<T> {
@@ -70,8 +75,26 @@ impl<T: Copy + Send> Producer<T> {
 }
 
 impl<T: Copy + Send> Consumer<T> {
-    /// Removes the oldest item.
+    /// Gives this consumer a second producer with its own ring of `capacity`,
+    /// so a second thread can feed it without sharing the first producer. Each
+    /// ring stays single-producer; `pop` drains this one first, then the other.
+    /// Allocates: call it before handing the consumer to its thread.
+    pub fn with_producer(mut self, capacity: usize) -> (Consumer<T>, Producer<T>) {
+        let (producer, consumer) = ring(capacity);
+        let mut last = &mut self;
+        while last.next.is_some() {
+            last = last.next.as_mut().expect("checked above");
+        }
+        last.next = Some(Box::new(consumer));
+        (self, producer)
+    }
+
+    /// Removes the oldest item of its own ring, else of the next one.
     pub fn pop(&mut self) -> Option<T> {
+        self.pop_own().or_else(|| self.next.as_mut().and_then(|next| next.pop()))
+    }
+
+    fn pop_own(&mut self) -> Option<T> {
         let head = self.inner.head.0.load(Ordering::Relaxed);
         if head == self.cached_tail {
             self.cached_tail = self.inner.tail.0.load(Ordering::Acquire);
@@ -89,6 +112,7 @@ impl<T: Copy + Send> Consumer<T> {
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.inner.head.0.load(Ordering::Relaxed) == self.inner.tail.0.load(Ordering::Acquire)
+            && self.next.as_ref().is_none_or(|next| next.is_empty())
     }
 }
 #[cfg(test)]
@@ -123,6 +147,56 @@ mod tests {
             assert!(!rx.is_empty());
             assert_eq!(rx.pop(), Some(i));
         }
+    }
+
+    #[test]
+    fn a_second_producer_feeds_the_same_consumer() {
+        let (mut keys, rx) = ring::<u32>(4);
+        let (mut rx, mut previews) = rx.with_producer(2);
+        assert!(previews.push(100));
+        assert!(keys.push(1));
+        assert!(keys.push(2));
+        assert!(previews.push(101));
+        assert!(!previews.push(102), "each ring keeps its own capacity");
+        let drained: Vec<u32> = std::iter::from_fn(|| rx.pop()).collect();
+        assert_eq!(drained, [1, 2, 100, 101]);
+        assert!(rx.is_empty());
+        assert!(previews.push(103), "space is freed as the consumer pops");
+        assert_eq!(rx.pop(), Some(103));
+    }
+
+    #[test]
+    fn two_producer_threads_lose_nothing() {
+        const N: u64 = 100_000;
+        let (mut a, rx) = ring::<u64>(64);
+        let (mut rx, mut b) = rx.with_producer(64);
+        let spawn = |mut push: Box<dyn FnMut(u64) -> bool + Send>, offset: u64| {
+            std::thread::spawn(move || {
+                for i in 0..N {
+                    while !push(offset + i) {
+                        std::hint::spin_loop();
+                    }
+                }
+            })
+        };
+        let ta = spawn(Box::new(move |x| a.push(x)), 0);
+        let tb = spawn(Box::new(move |x| b.push(x)), N);
+        let (mut next_a, mut next_b) = (0, N);
+        while next_a < N || next_b < 2 * N {
+            match rx.pop() {
+                Some(v) if v < N => {
+                    assert_eq!(v, next_a, "each producer's order is kept");
+                    next_a += 1;
+                }
+                Some(v) => {
+                    assert_eq!(v, next_b);
+                    next_b += 1;
+                }
+                None => std::hint::spin_loop(),
+            }
+        }
+        ta.join().unwrap();
+        tb.join().unwrap();
     }
 
     #[test]
