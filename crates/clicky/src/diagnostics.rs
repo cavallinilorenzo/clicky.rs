@@ -204,13 +204,15 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 /// The log file, opened while logging is on.
 pub struct Logger {
-    path: PathBuf,
+    /// `None` when there is nowhere to write it (no home folder): the file
+    /// log stays off.
+    path: Option<PathBuf>,
     file: Option<File>,
     stderr: bool,
 }
 
 impl Logger {
-    pub fn new(path: PathBuf, stderr: bool) -> Logger {
+    pub fn new(path: Option<PathBuf>, stderr: bool) -> Logger {
         Logger { path, file: None, stderr }
     }
 
@@ -222,11 +224,17 @@ impl Logger {
     pub fn set_enabled(&mut self, on: bool, version: &'static str) -> std::io::Result<()> {
         match (on, self.file.is_some()) {
             (true, false) => {
-                if let Some(dir) = self.path.parent() {
+                let Some(path) = &self.path else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "HOME is not set, so the log file is off",
+                    ));
+                };
+                if let Some(dir) = path.parent() {
                     std::fs::create_dir_all(dir)?;
                 }
-                rotate(&self.path)?;
-                self.file = Some(OpenOptions::new().create(true).append(true).open(&self.path)?);
+                rotate(path);
+                self.file = Some(OpenOptions::new().create(true).append(true).open(path)?);
                 self.write(SystemTime::now(), &Event::LogStarted { version });
             }
             (false, true) => {
@@ -253,17 +261,23 @@ impl Logger {
     }
 }
 
-fn rotate(path: &Path) -> std::io::Result<()> {
+/// Moves a large log to `Clicky.log.1`. Best effort: if the move fails, the
+/// log keeps growing rather than not starting.
+fn rotate(path: &Path) {
     if std::fs::metadata(path).is_ok_and(|m| m.len() > ROTATE_BYTES) {
-        std::fs::rename(path, path.with_extension("log.1"))?;
+        let _ = std::fs::rename(path, path.with_extension("log.1"));
     }
-    Ok(())
 }
 
-/// `~/Library/Logs/Clicky/Clicky.log`.
-pub fn log_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
-    home.join("Library/Logs/Clicky/Clicky.log")
+/// `~/Library/Logs/Clicky/Clicky.log`; `None` without a home folder.
+pub fn log_path() -> Option<PathBuf> {
+    log_path_in(std::env::var_os("HOME").as_deref())
+}
+
+/// The log file under `home`. No home, no file: never a shared folder such as `/tmp`.
+fn log_path_in(home: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let home = home.filter(|h| !h.is_empty())?;
+    Some(Path::new(home).join("Library/Logs/Clicky/Clicky.log"))
 }
 
 static LOGGER: Mutex<Option<Logger>> = Mutex::new(None);
@@ -285,7 +299,8 @@ pub fn set_stderr(on: bool) {
 pub fn set_enabled(on: bool) {
     let result = with_logger(|logger| logger.set_enabled(on, env!("CARGO_PKG_VERSION")));
     if let Err(e) = result {
-        eprintln!("clicky: cannot open {}: {e}", log_path().display());
+        let path = log_path().map_or_else(|| "the log".to_owned(), |p| p.display().to_string());
+        eprintln!("clicky: cannot open {path}: {e}");
     }
 }
 
@@ -411,7 +426,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("clicky-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("Logs/Clicky.log");
-        let mut logger = Logger::new(path.clone(), false);
+        let mut logger = Logger::new(Some(path.clone()), false);
         logger.write(at(1, 0), &Event::InputTapStarted);
         assert!(!path.exists(), "nothing is written while the log is off");
 
@@ -436,10 +451,42 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Clicky.log");
         std::fs::write(&path, vec![b'x'; ROTATE_BYTES as usize + 1]).unwrap();
-        let mut logger = Logger::new(path.clone(), false);
+        let mut logger = Logger::new(Some(path.clone()), false);
         logger.set_enabled(true, "1").unwrap();
         assert!(dir.join("Clicky.log.1").exists());
         assert!(std::fs::metadata(&path).unwrap().len() < 200);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_rotation_that_fails_does_not_stop_the_log() {
+        let dir = std::env::temp_dir().join(format!("clicky-rotate-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // A non-empty folder where the rotated file should go: the rename fails.
+        std::fs::create_dir_all(dir.join("Clicky.log.1/in-the-way")).unwrap();
+        let path = dir.join("Clicky.log");
+        std::fs::write(&path, vec![b'x'; ROTATE_BYTES as usize + 1]).unwrap();
+        let mut logger = Logger::new(Some(path.clone()), false);
+        logger.set_enabled(true, "1").expect("enabling never fails because of the rotation");
+        assert!(logger.is_enabled());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.len() > ROTATE_BYTES as usize, "appended to the unrotated file");
+        assert!(text.ends_with("log: started (Clicky 1)\n"), "{}", &text[text.len() - 60..]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_log_lives_in_the_home_folder_and_nowhere_else() {
+        assert_eq!(
+            log_path_in(Some("/Users/someone".as_ref())),
+            Some(PathBuf::from("/Users/someone/Library/Logs/Clicky/Clicky.log"))
+        );
+        assert_eq!(log_path_in(None), None, "no HOME: no file, not /tmp");
+        assert_eq!(log_path_in(Some("".as_ref())), None, "an empty HOME counts as none");
+
+        let mut logger = Logger::new(None, false);
+        assert!(logger.set_enabled(true, "1").is_err(), "says why the log is off");
+        assert!(!logger.is_enabled());
+        logger.write(at(1, 0), &Event::InputTapStarted);
     }
 }

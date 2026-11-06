@@ -25,4 +25,9 @@ jobs:
       - run: cargo build --locked
       # Universal (arm64 + x86_64) Clicky.app; CI has no signing identity, so ad-hoc.
       - run: cargo xtask bundle --adhoc
-      - run: lipo -archs target/bundle/Clicky.app/Contents/MacOS/Clicky
+      - name: Universal binary has both slices
+        run: |
+          archs="$(lipo -archs target/bundle/Clicky.app/Contents/MacOS/Clicky)"
+          echo "archs: $archs"
+          echo "$archs" | grep -qw x86_64
+          echo "$archs" | grep -qw arm64

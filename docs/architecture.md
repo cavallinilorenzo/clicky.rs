@@ -67,23 +67,23 @@ input (CGEventTap, listen-only)            │
 
 | Module | What it does | Pure / tested |
 |---|---|---|
-| `main.rs` | Arguments (`--version`, `--self-test`, `--bench-typing`, `--menu`), then `app::run`. | |
+| `main.rs` | Arguments (`--version`, `--self-test`, `--bench-typing`, `--menu [--needs-permission]`), then `app::run`. | |
 | `app.rs` | Launch wiring: settings (`restored`: on/off, volume, sound options), sleep policy, soundpack, audio, input, UI. | yes (`restored`, across a real relaunch) |
 | `settings.rs` | Typed `Setting<T>` + `Store` over `NSUserDefaults` (in-memory backend for tests). Each feature declares its own `Setting` const next to its code. | yes |
 | `diagnostics.rs` | The optional log: the `Event` enum (no key data, by construction), line formatting, the file logger. `LOG_ENABLED` setting. | yes |
-| `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition` (both played by `Voicer::key`), `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input logged once per kind). | yes |
+| `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition` (both played by `Voicer::key`), `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input noted by the tap callback, logged by the tap thread once per kind). | yes |
 | `packs.rs` | The `Library` of bundled soundpacks (descriptions read at launch, audio on first use, never freed), grouped by `SwitchType`; `load_saved` (saved id → default → first that loads); `DEFAULT_PACK`, `SELECTED_PACK` setting. | yes |
 | `engine/mod.rs` | `Shared` atomics (including the current soundpack, an `AtomicPtr` swapped by the picker, and the three sound options), `Kick`, `Voicer` (`key`, `press`, `release`; applies the options); `SOUNDS_ON` setting, `MASTER_GAIN` (the volume slider's maximum). | yes |
 | `engine/options.rs` | The sound options: `RELEASE_SOUNDS`, `NATURAL_VARIATION`, `SPATIAL_STEREO` settings (all on by default), `restore`, `variation` (±1.5 dB, ±35 cents), `key_pan` (key x position, at most ±0.4), the tap thread's xorshift64* `Rng`. | yes |
 | `engine/preview.rs` | The pick preview: its own thread, `Voicer` and ring press a short "rust ⏎" from the current soundpack; picking again restarts it. | yes |
 | `engine/ring.rs` | Wait-free SPSC ring; `Consumer::with_producer` chains a second ring (the preview's) into the same consumer. | yes |
 | `engine/mixer.rs` | Voice pool (32 voices + 16 slots for stolen voices fading out over 5 ms), stereo mix: per-voice pitch (0.9–1.05) and equal-power pan (`pan_gains`, centre = unity, bit-identical channels), `set_mono` (every voice centred), master-gain ramp (≤ full scale per 20 ms, one-pole smoothed, per frame), headroom, `VOLUME` setting and `volume_gain` (dB curve). | yes |
-| `engine/mixer/resample.rs` | Kaiser-windowed sinc (32 zero crossings, β = 9, cutoff 0.95 × the lower Nyquist), 256-phase polyphase tables built and cached off the real-time path. | yes (via the mixer) |
+| `engine/mixer/resample.rs` | Kaiser-windowed sinc (32 zero crossings, β = 9, cutoff 0.95 × the lower Nyquist), 256-phase polyphase tables built and cached off the real-time path; the dot product is written in NEON on Apple silicon (bit-identical to the portable loop, about a third of the instructions). | yes (via the mixer; NEON vs portable bit for bit) |
 | `engine/mixer/limiter.rs` | Look-ahead peak limiter, ceiling −1 dBFS, 1.5 ms look-ahead with no latency (voices are rendered ahead), 60 ms release; one gain for both channels, set by the louder. | yes (via the mixer) |
 | `engine/mixer/stress.rs` | The offline stress render (tests only): fast typing, mashing, 10 keys held 60 s, steal storm, slider while typing, at 44.1/48/96 kHz, with Natural Variation and Spatial Stereo on (and fast typing with both off); both channels checked. | test |
-| `audio/lifecycle.rs` | ADR 0001 policy as a pure state machine (cold / starting / warm, hold window, rebuild triggers, sleep/wake, watchdog); time and render counts are passed in. | yes |
-| `audio/device.rs` | Transport kinds and what they imply: small buffer only on built-in, `BLUETOOTH_PRE_ROLL` (provisional) only on Bluetooth. | yes |
-| `audio/mod.rs` | The control thread: drives the lifecycle against the output, confirms device signals, logs every start, stop, rebuild and trigger with its cause and first-render time. | |
+| `audio/lifecycle.rs` | ADR 0001 policy as a pure state machine (cold / starting / warm, hold window, rebuild triggers, sleep/wake, watchdog), and `Retry` (backoff and log-once for creating the output unit); time and render counts are passed in. | yes |
+| `audio/device.rs` | Transport kinds and what they imply: small buffer only on built-in; `BLUETOOTH_PRE_ROLL` (provisional) and `flags_silence` (false: true zeros while warm, never `OutputIsSilence`) only on Bluetooth. | yes |
+| `audio/mod.rs` | The control thread: drives the lifecycle against the output, creates the output unit (retried on later key presses, 1 s doubling to 60 s, if it fails), confirms device signals, logs every start, stop, rebuild and trigger with its cause and first-render time. | |
 | `audio/signals.rs` | Signal bits from CoreAudio listeners and sleep/wake to the control thread (set a bit, unpark). | yes |
 | `audio/hal.rs` | CoreAudio HAL queries (default device, transport, rate, format, buffer), `allow_system_sleep`, property listeners. | |
 | `audio/power.rs` | `NSWorkspace` will-sleep / did-wake observers. | |
@@ -97,12 +97,12 @@ input (CGEventTap, listen-only)            │
 | `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`; hops input status changes to the main queue. | |
 | `ui/onboarding.rs` | The first-run window: `Model` (when it shows and which step: explain / granted / relaunch), the window, opening Input Monitoring settings, `relaunch`. | yes (model) |
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
-| `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). | yes (state) |
+| `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). Needs permission wins over off: the icon flags what must be fixed, and the menu still shows the switch's state. | yes (state) |
 | `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order; `describe` prints the built menu for `--menu`. | yes (`tests/menu_order.rs` runs `--menu`) |
-| `ui/menu/sound_switch.rs`, `soundpack.rs`, `volume.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
+| `ui/menu/sound_switch.rs`, `soundpack.rs`, `volume.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. `diagnostics.rs`: "Diagnostics Log", About's alternate item (shown in its place while Option is held, even with the menu open). | partly (`choose`, `credits_text`) |
 | `ui/menu/options.rs` | Key Release Sounds, Natural Variation, Spatial Stereo checkboxes after the volume slider; Key Release Sounds greyed out with "This soundpack has no release sounds" (subtitle on macOS 14.4+, note row before; tooltip) for packs without them (`Entry::has_release`), refreshed on each menu open. | yes (`view`, `SoundOption::set`) |
 | `ui/menu/launch_at_login.rs` | "Launch at Login" over `SMAppService.mainAppService`, behind the `LoginItem` seam; reads the real state on each menu open. | yes (toggle, view) |
-| `ui/menu/permission.rs` | The rows shown while sounds are unavailable for lack of permission, with the fix. | yes (rows) |
+| `ui/menu/permission.rs` | The rows shown at the top of the menu, above the switch, while sounds are unavailable for lack of permission, with the fix. | yes (rows; `tests/menu_order.rs` via `--menu --needs-permission`) |
 
 `crates/xtask/src`: `catalog.rs` (which packs ship, in menu order), `sources/` (one adapter per
 source layout: `mechvibes.rs`, `kbsim.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),
@@ -149,6 +149,14 @@ Never rename a shipped settings key (`SoundsOn`, `DiagnosticsLog`).
   call `CGEventKeyboardGetUnicodeString` or anything that yields characters, and never
   log a keycode. `diagnostics::Event` has no variant that can carry one
   (`UnrecognisedInput` carries only a fixed description of the kind).
+- The tap callback (`input/mod.rs::tap_callback`) and everything it calls
+  (`KeyState`, `Voicer`, `Producer::push`, `Shared` atomics) must not lock, allocate
+  or log, for any event. A re-enabled tap and unrecognised input (`LogOnce::note`)
+  only set atomic bits; the tap thread logs them after each run-loop pass
+  (`drain_log`, up to 3 s later), unrecognised input at most once per kind per
+  process. Exceptions: `media::read` (above), and one system call: a press while the
+  output is cold or still starting unparks the audio control thread (`Kick::kick`,
+  `Thread::unpark`). While the output is warm a press makes no system call.
 
 ## Sound quality (`engine/mixer`)
 

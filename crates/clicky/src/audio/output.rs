@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use super::device::{self, Transport};
-use super::hal::{self, DeviceId, OsError, check};
+use super::hal::{self, DeviceId, OsError, OutputFormat, check};
 use super::lifecycle::Trigger;
 use super::{ffi, signals};
 use crate::engine::Shared;
@@ -58,7 +58,8 @@ impl RenderSignals {
 pub enum Block {
     /// Voices sounded.
     Sound,
-    /// Nothing sounded (CoreAudio may skip the zeros).
+    /// Nothing sounded: zeros, which CoreAudio may skip where the transport
+    /// allows it (`RenderState::flags_silence`).
     Silence,
     /// Pre-roll silence, written out on purpose so the device keeps streaming.
     PreRoll,
@@ -73,6 +74,9 @@ pub struct RenderState {
     input: Consumer<Play>,
     /// Frames of pre-roll silence left before queued voices may start.
     pre_roll: u32,
+    /// Whether silent blocks may be flagged as silence (not on Bluetooth,
+    /// `Transport::flags_silence`).
+    flag_silence: bool,
 }
 
 impl RenderState {
@@ -81,17 +85,33 @@ impl RenderState {
         signals: &'static RenderSignals,
         input: Consumer<Play>,
     ) -> RenderState {
-        RenderState { shared, signals, mixer: Mixer::new(FALLBACK_RATE), input, pre_roll: 0 }
+        RenderState {
+            shared,
+            signals,
+            mixer: Mixer::new(FALLBACK_RATE),
+            input,
+            pre_roll: 0,
+            flag_silence: true,
+        }
     }
 
     /// Readies a start at `rate`. Only while the unit is stopped. A fresh mixer
     /// means the first voice plays at full gain from its first sample, with no
     /// ramp left over from the fade that ended the previous run.
-    pub fn prepare(&mut self, rate: f64, pre_roll_frames: u32) {
+    /// `flag_silence` is the transport's [`Transport::flags_silence`].
+    pub fn prepare(&mut self, rate: f64, pre_roll_frames: u32, flag_silence: bool) {
         self.mixer = Mixer::new(rate);
         self.pre_roll = pre_roll_frames;
+        self.flag_silence = flag_silence;
         self.signals.fade.store(false, Ordering::Release);
         self.signals.faded.store(false, Ordering::Release);
+    }
+
+    /// Whether the render callback flags `block` as silence, so CoreAudio
+    /// may skip it. Only silent blocks, and never on an output that must keep
+    /// streaming (Bluetooth): those get the zeros `fill` wrote.
+    pub fn flags_silence(&self, block: Block) -> bool {
+        block == Block::Silence && self.flag_silence
     }
 
     /// One render cycle into `left` and `right`. Real-time: no allocation,
@@ -148,28 +168,51 @@ pub struct Started {
 struct Bound {
     device: DeviceId,
     rate: f64,
-    format: Option<(f64, u32, u32)>,
+    format: Option<OutputFormat>,
 }
 
 /// The output unit. Lives on the audio control thread.
 pub struct Output {
-    unit: Unit,
+    /// `None` until [`Output::create_unit`] succeeds.
+    unit: Option<Unit>,
     /// Leaked on purpose: CoreAudio holds this pointer for the life of the unit,
     /// and the output lives for the life of the process.
     state: *mut RenderState,
     signals: &'static RenderSignals,
     bound: Option<Bound>,
+    /// Whether the default-device listeners are installed.
+    watching_system: bool,
 }
 
+/// What `start` reports when there is no unit yet.
+const NO_UNIT: OsError = OsError { call: "AudioComponentInstanceNew (no unit yet)", status: -1 };
+
 impl Output {
-    /// Creates the unit up front (the first instantiation is slow), cold, and
-    /// starts listening for default-device changes.
-    pub fn new(shared: &'static Shared, input: Consumer<Play>) -> Result<Output, OsError> {
+    /// A cold output without a unit yet: call [`Output::create_unit`] before
+    /// the first start. Only this never fails, so the key ring is never lost.
+    pub fn new(shared: &'static Shared, input: Consumer<Play>) -> Output {
         let signals: &'static RenderSignals = Box::leak(Box::new(RenderSignals::new()));
         let state = Box::into_raw(Box::new(RenderState::new(shared, signals, input)));
-        let unit = Unit::new(state.cast())?;
-        hal::watch_system()?;
-        Ok(Output { unit, state, signals, bound: None })
+        Output { unit: None, state, signals, bound: None, watching_system: false }
+    }
+
+    /// Whether [`Output::create_unit`] has succeeded.
+    pub fn has_unit(&self) -> bool {
+        self.unit.is_some() && self.watching_system
+    }
+
+    /// Creates the unit (the first instantiation is slow) and starts
+    /// listening for default-device changes, whichever is not done yet. Call
+    /// again after a failure to retry.
+    pub fn create_unit(&mut self) -> Result<(), OsError> {
+        if self.unit.is_none() {
+            self.unit = Some(Unit::new(self.state.cast())?);
+        }
+        if !self.watching_system {
+            hal::watch_system()?;
+            self.watching_system = true;
+        }
+        Ok(())
     }
 
     /// Render cycles so far.
@@ -179,6 +222,8 @@ impl Output {
 
     /// Goes warm on the current default output device at its current format.
     pub fn start(&mut self) -> Result<Started, OsError> {
+        let state = self.state;
+        let unit = self.unit.as_mut().ok_or(NO_UNIT)?;
         let device = hal::default_output_device()?;
         let transport = hal::transport(device);
         if let Some(frames) =
@@ -189,28 +234,28 @@ impl Output {
             let _ = hal::set_buffer_frames(device, frames);
         }
         let nominal = hal::nominal_sample_rate(device);
-        let rate = match self.unit.initialize(device, nominal) {
+        let rate = match unit.initialize(device, nominal) {
             Ok(rate) => rate,
             Err(_) => {
                 // A unit that was bound to a vanished device can stay broken:
                 // start over with a fresh one.
-                self.unit = Unit::new(self.state.cast())?;
-                self.unit.initialize(device, nominal)?
+                *unit = Unit::new(state.cast())?;
+                unit.initialize(device, nominal)?
             }
         };
         let pre_roll = transport.pre_roll();
         // A one-channel device gets only our left channel (AUHAL drops the rest).
-        let mono = self.unit.device_channels() == Some(1);
+        let mono = unit.device_channels() == Some(1);
         // SAFETY: the unit is not running, so the IO thread does not use the state.
         unsafe {
-            (*self.state).prepare(rate, device::frames(pre_roll, rate));
-            (*self.state).mixer.set_mono(mono);
+            (*state).prepare(rate, device::frames(pre_roll, rate), transport.flags_silence());
+            (*state).mixer.set_mono(mono);
         }
         // Best effort: without the listeners the watchdog still catches a dead device.
         let _ = hal::watch_device(device);
-        if let Err(e) = self.unit.start() {
+        if let Err(e) = unit.start() {
             hal::unwatch_device(device);
-            self.unit.uninitialize();
+            unit.uninitialize();
             return Err(e);
         }
         self.bound = Some(Bound { device, rate, format: hal::output_format(device) });
@@ -229,8 +274,10 @@ impl Output {
             self.fade_out();
             hal::unwatch_device(bound.device);
         }
-        self.unit.stop();
-        self.unit.uninitialize();
+        if let Some(unit) = self.unit.as_mut() {
+            unit.stop();
+            unit.uninitialize();
+        }
     }
 
     fn fade_out(&self) {
@@ -458,7 +505,7 @@ unsafe extern "C" fn render(
         }
         [] => Block::Silence,
     };
-    if block == Block::Silence {
+    if state.flags_silence(block) {
         // SAFETY: `flags` is a valid in/out pointer for the duration of the call.
         unsafe { *flags |= ffi::kAudioUnitRenderAction_OutputIsSilence };
     }
@@ -506,7 +553,7 @@ mod tests {
     fn a_press_queued_during_a_cold_start_plays_at_full_level_on_the_first_render() {
         let (mut state, mut ring, _) = render_state();
         assert!(ring.push(press()), "pressed while the output was still starting");
-        state.prepare(48_000.0, 0);
+        state.prepare(48_000.0, 0, true);
         let (block, out) = block(&mut state, 128);
         assert_eq!(block, Block::Sound);
         assert_eq!(out[0], LEVEL, "no fade-in on the first sample");
@@ -516,17 +563,32 @@ mod tests {
     #[test]
     fn silence_is_reported_as_silence() {
         let (mut state, _ring, _) = render_state();
-        state.prepare(48_000.0, 0);
+        state.prepare(48_000.0, 0, true);
         let (block, out) = block(&mut state, 64);
         assert_eq!(block, Block::Silence);
         assert!(out.iter().all(|s| *s == 0.0));
+        assert!(state.flags_silence(block), "CoreAudio may skip it");
+    }
+
+    #[test]
+    fn a_warm_output_that_must_keep_streaming_never_flags_silence() {
+        // Bluetooth (ADR 0001): the headphones get real zeros through the hold window.
+        let (mut state, mut ring, _) = render_state();
+        state.prepare(48_000.0, 0, false);
+        let (silent, out) = block(&mut state, 64);
+        assert_eq!(silent, Block::Silence);
+        assert!(out.iter().all(|s| *s == 0.0), "true zeros");
+        assert!(!state.flags_silence(silent));
+        ring.push(press());
+        let (sound, _) = block(&mut state, 64);
+        assert!(!state.flags_silence(sound));
     }
 
     #[test]
     fn the_pre_roll_holds_queued_presses_back_then_plays_them() {
         let (mut state, mut ring, _) = render_state();
         ring.push(press());
-        state.prepare(48_000.0, 200);
+        state.prepare(48_000.0, 200, true);
         for _ in 0..2 {
             let (block, out) = block(&mut state, 128);
             assert_eq!(block, Block::PreRoll, "written-out silence, not flagged as silence");
@@ -541,7 +603,7 @@ mod tests {
     #[test]
     fn a_fade_ramps_to_silence_within_one_block_and_keeps_queued_presses() {
         let (mut state, mut ring, signals) = render_state();
-        state.prepare(48_000.0, 0);
+        state.prepare(48_000.0, 0, true);
         ring.push(press());
         assert_eq!(block(&mut state, 64).0, Block::Sound);
 
@@ -555,7 +617,7 @@ mod tests {
         assert_eq!(block_after, Block::Silence, "stays silent until the stop");
         assert!(after.iter().all(|s| *s == 0.0));
 
-        state.prepare(44_100.0, 0);
+        state.prepare(44_100.0, 0, true);
         assert!(!signals.fade.load(Ordering::Acquire));
         let (block_rebuilt, rebuilt) = block(&mut state, 64);
         assert_eq!(block_rebuilt, Block::Sound, "the press made during the fade plays after it");
@@ -565,7 +627,7 @@ mod tests {
     #[test]
     fn every_render_cycle_counts_for_the_watchdog() {
         let (mut state, _ring, signals) = render_state();
-        state.prepare(48_000.0, 64);
+        state.prepare(48_000.0, 64, true);
         block(&mut state, 64);
         block(&mut state, 64);
         signals.fade.store(true, Ordering::Release);

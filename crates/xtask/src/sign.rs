@@ -7,6 +7,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use crate::cmd::{output, run};
+
 /// Common name of the self-signed code-signing certificate.
 pub const IDENTITY_NAME: &str = "Clicky Local Signing";
 /// Overrides [`IDENTITY_NAME`] (a name or a SHA-1 hash).
@@ -30,8 +32,27 @@ pub fn find_identity(listing: &str, name: &str) -> Option<String> {
         .lines()
         .filter(|line| line.contains(&quoted))
         .filter_map(|line| line.split_whitespace().nth(1))
-        .find(|hash| hash.len() == 40 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+        .find(|hash| is_sha1(hash))
         .map(str::to_owned)
+}
+
+/// Whether `text` is a SHA-1 hash: 40 hex digits.
+fn is_sha1(text: &str) -> bool {
+    text.len() == 40 && text.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The SHA-1 to sign with, from the identity listing (or the failure to get
+/// it) and the identity `name` asked for, which may itself be a hash. `Err`
+/// is the warning to print before falling back to ad-hoc.
+fn choose_identity(listing: crate::Result<String>, name: &str) -> Result<String, String> {
+    if is_sha1(name) {
+        return Ok(name.to_owned());
+    }
+    match listing {
+        Ok(listing) => find_identity(&listing, name)
+            .ok_or_else(|| format!("no code-signing identity named {name:?} in the keychain")),
+        Err(e) => Err(format!("could not list the keychain's code-signing identities ({e})")),
+    }
 }
 
 /// Signs `app` with the local identity, or ad-hoc when it is missing, when
@@ -39,20 +60,13 @@ pub fn find_identity(listing: &str, name: &str) -> Option<String> {
 pub fn sign(app: &Path, adhoc: bool) -> crate::Result<Signature> {
     let name = std::env::var(IDENTITY_ENV).unwrap_or_else(|_| IDENTITY_NAME.to_owned());
     if !adhoc {
-        let listing = output(Command::new("security").args(["find-identity", "-p", "codesigning"]))
-            .unwrap_or_default();
-        let sha1 = find_identity(&listing, &name).or_else(|| {
-            (name.len() == 40 && name.chars().all(|c| c.is_ascii_hexdigit())).then(|| name.clone())
-        });
-        match sha1 {
-            Some(sha1) => {
-                let status = codesign(app, &sha1);
-                match status {
-                    Ok(()) => return Ok(Signature::Identity { name, sha1 }),
-                    Err(e) => eprintln!("warning: signing with {name:?} failed ({e})"),
-                }
-            }
-            None => eprintln!("warning: no code-signing identity named {name:?} in the keychain"),
+        let listing = output(Command::new("security").args(["find-identity", "-p", "codesigning"]));
+        match choose_identity(listing, &name) {
+            Ok(sha1) => match codesign(app, &sha1) {
+                Ok(()) => return Ok(Signature::Identity { name, sha1 }),
+                Err(e) => eprintln!("warning: signing with {name:?} failed ({e})"),
+            },
+            Err(warning) => eprintln!("warning: {warning}"),
         }
     }
     codesign(app, "-")?;
@@ -76,19 +90,6 @@ fn codesign(app: &Path, identity: &str) -> crate::Result<()> {
         .args(["--force", "--timestamp=none", "--sign", identity])
         .arg(app))?;
     run(Command::new("codesign").args(["--verify", "--strict"]).arg(app))
-}
-
-pub(crate) fn run(cmd: &mut Command) -> crate::Result<()> {
-    let status = cmd.status().map_err(|e| format!("{cmd:?}: {e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("{cmd:?} failed with {status}")) }
-}
-
-pub(crate) fn output(cmd: &mut Command) -> crate::Result<String> {
-    let out = cmd.output().map_err(|e| format!("{cmd:?}: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("{cmd:?} failed with {}", out.status));
-    }
-    String::from_utf8(out.stdout).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -120,6 +121,37 @@ Policy: Code Signing
         assert_eq!(find_identity(LISTING, "Someone Else"), None);
         assert_eq!(find_identity("     0 identities found\n", IDENTITY_NAME), None);
         assert_eq!(find_identity(LISTING, "Clicky"), None, "names must match exactly");
+    }
+
+    #[test]
+    fn a_sha1_is_forty_hex_digits() {
+        assert!(is_sha1("89ABCDEF0123456789ABCDEF0123456789ABCDEF"));
+        assert!(is_sha1("89abcdef0123456789abcdef0123456789abcdef"));
+        assert!(!is_sha1("89ABCDEF0123456789ABCDEF0123456789ABCDE"), "39 digits");
+        assert!(!is_sha1("89ABCDEF0123456789ABCDEF0123456789ABCDEG"), "not hex");
+        assert!(!is_sha1(IDENTITY_NAME));
+    }
+
+    #[test]
+    fn a_failed_identity_lookup_is_told_apart_from_a_missing_identity() {
+        let sha1 = "89ABCDEF0123456789ABCDEF0123456789ABCDEF";
+        assert_eq!(choose_identity(Ok(LISTING.to_owned()), IDENTITY_NAME), Ok(sha1.to_owned()));
+
+        let missing = choose_identity(Ok(String::new()), IDENTITY_NAME).unwrap_err();
+        assert!(missing.contains("no code-signing identity named"), "{missing}");
+
+        let failed =
+            choose_identity(Err("security failed with exit status: 51".into()), IDENTITY_NAME)
+                .unwrap_err();
+        assert!(
+            failed.contains("could not list") && failed.contains("exit status: 51"),
+            "{failed}"
+        );
+        assert!(!failed.contains("no code-signing identity named"), "{failed}");
+
+        // A hash given directly still signs, listing or not.
+        assert_eq!(choose_identity(Err("x".into()), sha1), Ok(sha1.to_owned()));
+        assert_eq!(choose_identity(Ok(String::new()), sha1), Ok(sha1.to_owned()));
     }
 
     #[test]

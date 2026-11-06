@@ -118,8 +118,16 @@ pub fn nominal_sample_rate(device: DeviceId) -> Option<f64> {
         .filter(|rate| *rate > 0.0)
 }
 
-/// The device's output stream format: (sample rate, channels, bits).
-pub fn output_format(device: DeviceId) -> Option<(f64, u32, u32)> {
+/// What of a device's output stream format a running output depends on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputFormat {
+    pub rate: f64,
+    pub channels: u32,
+    pub bits: u32,
+}
+
+/// The device's output stream format.
+pub fn output_format(device: DeviceId) -> Option<OutputFormat> {
     get::<ffi::AudioStreamBasicDescription>(
         "StreamFormat",
         device,
@@ -127,7 +135,11 @@ pub fn output_format(device: DeviceId) -> Option<(f64, u32, u32)> {
         OUTPUT,
     )
     .ok()
-    .map(|f| (f.mSampleRate, f.mChannelsPerFrame, f.mBitsPerChannel))
+    .map(|f| OutputFormat {
+        rate: f.mSampleRate,
+        channels: f.mChannelsPerFrame,
+        bits: f.mBitsPerChannel,
+    })
 }
 
 pub fn is_alive(device: DeviceId) -> bool {

@@ -195,7 +195,8 @@ impl Kick {
         Kick { thread: None }
     }
 
-    /// Call after stamping the key press.
+    /// Call after stamping the key press. Only when the output is not warm
+    /// does it unpark the control thread, the tap thread's one system call.
     fn kick(&self, shared: &Shared) {
         // Pairs with the fence after the control thread clears `warm`.
         fence(Ordering::SeqCst);
@@ -208,7 +209,12 @@ impl Kick {
 }
 
 /// The key listener's end of the path: turns a key press or release into a
-/// voice request. Runs on the tap thread: no locks, no allocation. It plays
+/// voice request. Runs on the tap thread: no locks, no allocation, and no
+/// system call except one: a press while the output is not warm wakes the
+/// audio control thread ([`Kick`], `Thread::unpark`, which may enter the
+/// kernel). That happens only for presses while the output is cold or still
+/// starting; while warm (the hold window after each press) a press makes no
+/// system call. It plays
 /// from whichever soundpack [`Shared::pack`] holds at the time of the key,
 /// with the options [`Shared`] holds then.
 pub struct Voicer {

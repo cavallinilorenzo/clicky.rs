@@ -12,6 +12,7 @@
 //! A [`Transition::Release`] plays the key's own release sound, if Key Release
 //! Sounds is on and the soundpack has one (`engine::Voicer::release`).
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use clicky_pack::Pack;
@@ -75,13 +76,14 @@ mod flag {
         DEV_LCTL | DEV_LSHIFT | DEV_RSHIFT | DEV_LCMD | DEV_RCMD | DEV_LALT | DEV_RALT | DEV_RCTL;
 }
 
-/// While a key is held and is the last key that went down, a second key-down
-/// without the auto-repeat flag within this long of the previous one is taken
-/// as auto-repeat whose flag was lost. macOS repeats at most every 1.8 s
-/// (slowest setting), so a held key keeps refreshing this window; after it,
-/// the release was lost (e.g. hidden by Secure Keyboard Entry) and the
-/// key-down is a new press.
-const REPEAT_WINDOW: Duration = Duration::from_millis(2_500);
+/// The auto-repeat flag decides: a key-down with it is never a press, one
+/// without it is a new press, even if the key still counts as held (its
+/// release was lost, e.g. hidden by Secure Keyboard Entry). Only a burst is
+/// held back: while a key is held and is the last key that went down, a
+/// key-down without the flag within this long of the previous one is not a
+/// press. It is shorter than the shortest initial key-repeat delay macOS
+/// offers (225 ms), so a lost release mutes the key for at most this long.
+const BURST_WINDOW: Duration = Duration::from_millis(200);
 
 /// Number of `u64` words for one bit per possible `u16` keycode.
 const HELD_WORDS: usize = (u16::MAX as usize + 1) / 64;
@@ -153,11 +155,11 @@ impl KeyState {
         if autorepeat {
             return None;
         }
-        let lost_repeat_flag = self.is_held(keycode)
+        let burst = self.is_held(keycode)
             && last.is_some_and(|(k, at)| {
-                k == keycode && now.saturating_duration_since(at) < REPEAT_WINDOW
+                k == keycode && now.saturating_duration_since(at) < BURST_WINDOW
             });
-        if lost_repeat_flag {
+        if burst {
             return None;
         }
         self.set(keycode, true);
@@ -212,37 +214,56 @@ impl KeyState {
 /// Decides which unrecognised input is worth one log line: the first of each
 /// kind per process, described without its keycode. Unrecognised keys still
 /// sound (through [`press_clip`]'s fallback); this only keeps the log quiet.
+///
+/// Split in two so that the tap callback never logs: the callback calls
+/// [`note`](LogOnce::note) (an atomic bit: no lock, no allocation), and the
+/// tap thread, between run-loop passes, logs what
+/// [`take_new`](LogOnce::take_new) hands it.
 #[derive(Debug, Default)]
 pub struct LogOnce {
-    /// One bit per kind already logged.
-    logged: u8,
+    /// One bit per kind seen (set by the tap callback).
+    seen: AtomicU8,
+    /// One bit per kind already handed out for logging.
+    handed_out: AtomicU8,
 }
 
+/// The kinds of unrecognised input, one bit each.
+const UNRECOGNISED: [(u8, &str); 3] = [
+    (1, "a key outside the key table"),
+    (2, "a modifier change from a key that is not a modifier"),
+    (4, "a media key with no known position"),
+];
+
 impl LogOnce {
-    /// A description of `event`'s kind if it is unrecognised and the first of
-    /// its kind; `None` otherwise. Never contains a keycode.
-    pub fn first(&mut self, event: &KeyEvent) -> Option<&'static str> {
-        let (bit, kind) = match *event {
-            KeyEvent::Down { keycode, .. } | KeyEvent::Up { keycode } if !known(keycode) => {
-                (1, "a key outside the key table")
-            }
+    /// Remembers `event`'s kind if it is unrecognised. Real-time safe: for
+    /// the tap callback.
+    pub fn note(&self, event: &KeyEvent) {
+        let bit = match *event {
+            KeyEvent::Down { keycode, .. } | KeyEvent::Up { keycode } if !known(keycode) => 1,
             KeyEvent::FlagsChanged { keycode, .. }
                 if matches!(modifier(keycode), Modifier::Unknown) =>
             {
-                (2, "a modifier change from a key that is not a modifier")
+                2
             }
             KeyEvent::Media { key, .. }
                 if keys::media_keycode(key).is_some_and(|k| k >= keys::MEDIA_OTHER_BASE) =>
             {
-                (4, "a media key with no known position")
+                4
             }
-            _ => return None,
+            _ => return,
         };
-        if self.logged & bit != 0 {
-            return None;
+        if self.seen.load(Ordering::Relaxed) & bit == 0 {
+            self.seen.fetch_or(bit, Ordering::Relaxed);
         }
-        self.logged |= bit;
-        Some(kind)
+    }
+
+    /// A description of each kind noted since the last call and never handed
+    /// out before, so each kind at most once per process. Never contains a
+    /// keycode. Not for the tap callback: its caller logs.
+    pub fn take_new(&self) -> impl Iterator<Item = &'static str> {
+        let new = self.seen.load(Ordering::Relaxed) & !self.handed_out.load(Ordering::Relaxed);
+        self.handed_out.fetch_or(new, Ordering::Relaxed);
+        UNRECOGNISED.into_iter().filter(move |(bit, _)| new & bit != 0).map(|(_, kind)| kind)
     }
 }
 
@@ -375,15 +396,31 @@ mod tests {
     }
 
     #[test]
-    fn auto_repeat_without_its_flag_still_cannot_burst() {
+    fn key_downs_without_the_repeat_flag_cannot_burst() {
         let mut keys = Keys::new();
         assert_eq!(keys.down(0, J), Some(Press(J)));
-        for ms in (500..3_000).step_by(30) {
-            assert_eq!(keys.down(ms, J), None, "lost auto-repeat flag at {ms} ms");
+        for ms in (30..3_000).step_by(30) {
+            assert_eq!(keys.down(ms, J), None, "duplicate key-down at {ms} ms");
         }
-        // Even at the slowest key-repeat setting (one repeat every 1.8 s).
-        assert_eq!(keys.down(4_800, J), None);
-        assert_eq!(keys.down(6_600, J), None);
+        // After a pause as long as the initial key-repeat delay, a key-down
+        // without the repeat flag is a new press: the flag decides, and a
+        // stream of flagless repeats sounds at most once more.
+        assert_eq!(keys.down(3_500, J), Some(Press(J)));
+        for ms in (3_530..5_000).step_by(30) {
+            assert_eq!(keys.down(ms, J), None, "flagless repeat at {ms} ms");
+        }
+    }
+
+    #[test]
+    fn a_lost_key_up_mutes_the_key_only_briefly() {
+        // The key went up unseen (e.g. hidden by Secure Keyboard Entry), so it
+        // still counts as held when it is pressed again.
+        let mut keys = Keys::new();
+        assert_eq!(keys.down(0, J), Some(Press(J)));
+        assert_eq!(keys.down(300, J), Some(Press(J)), "the next press sounds");
+        assert_eq!(keys.repeat(800, J), None, "a flagged repeat never does");
+        assert_eq!(keys.up(900, J), Some(Release(J)));
+        assert_eq!(keys.down(1_000, J), Some(Press(J)));
     }
 
     #[test]
@@ -543,25 +580,35 @@ mod tests {
 
     #[test]
     fn unrecognised_input_is_reported_once_per_kind_without_its_keycode() {
-        let mut once = LogOnce::default();
+        let once = LogOnce::default();
         let down = |keycode| KeyEvent::Down { keycode, autorepeat: false };
-        assert_eq!(once.first(&down(u16::from(code::A))), None, "a known key");
-        assert_eq!(once.first(&KeyEvent::Up { keycode: 0x7E }), None);
         let flags = |keycode| KeyEvent::FlagsChanged { keycode, flags: 0 };
-        assert_eq!(once.first(&flags(u16::from(code::RIGHT_OPTION))), None);
         let media = |key| KeyEvent::Media { key, down: true, autorepeat: false };
-        assert_eq!(once.first(&media(0)), None, "volume up");
+        let known = [
+            down(u16::from(code::A)),
+            KeyEvent::Up { keycode: 0x7E },
+            flags(u16::from(code::RIGHT_OPTION)),
+            media(0), // volume up
+        ];
+        known.iter().for_each(|event| once.note(event));
+        assert_eq!(once.take_new().count(), 0, "known keys are not reported");
 
-        let kinds: Vec<&str> = [down(0x34), down(145), flags(0x00), media(15), media(99)]
-            .iter()
-            .cycle()
-            .take(5_000)
-            .filter_map(|event| once.first(event))
-            .collect();
+        let unknown = [down(0x34), down(145), flags(0x00), media(15), media(99)];
+        let mut kinds: Vec<&str> = Vec::new();
+        for (i, event) in unknown.iter().cycle().take(5_000).enumerate() {
+            once.note(event);
+            if i % 7 == 0 {
+                // The tap thread drains between run-loop passes, at any point.
+                kinds.extend(once.take_new());
+            }
+        }
+        kinds.extend(once.take_new());
         assert_eq!(kinds.len(), 3, "one line per kind, however often: {kinds:?}");
         for kind in kinds {
             assert!(!kind.chars().any(|c| c.is_ascii_digit()), "no keycode in {kind:?}");
         }
+        unknown.iter().for_each(|event| once.note(event));
+        assert_eq!(once.take_new().count(), 0, "never again in this process");
     }
 
     #[test]

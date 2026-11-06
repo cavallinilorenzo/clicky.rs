@@ -16,7 +16,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::bundle::{APP_NAME, MIN_MACOS};
-use crate::sign::output;
+use crate::cmd::output;
 
 /// Imported symbols (as `nm -u` prints them) that reach the network or typed text.
 const FORBIDDEN_IMPORTS: [&str; 15] = [

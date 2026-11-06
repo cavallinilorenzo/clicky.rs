@@ -30,7 +30,7 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        Some("--menu") => ui::print_menu(),
+        Some("--menu") => ui::print_menu(args.iter().any(|a| a == "--needs-permission")),
         // Anything else (including LaunchServices' legacy -psn_ argument) starts the app.
         _ => app::run(),
     }

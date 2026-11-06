@@ -1,6 +1,7 @@
 //! What kind of output device the output runs on, and what that means for it
-//! (ADR 0001): a small hardware buffer only on built-in outputs, a pre-roll
-//! only on Bluetooth outputs. Pure: the CoreAudio queries live in `hal`.
+//! (ADR 0001): a small hardware buffer only on built-in outputs; a pre-roll,
+//! and true zeros instead of flagged silence while warm, only on Bluetooth
+//! outputs. Pure: the CoreAudio queries live in `hal`.
 
 use std::time::Duration;
 
@@ -83,6 +84,15 @@ impl Transport {
     pub fn pre_roll(self) -> Duration {
         if self == Transport::Bluetooth { BLUETOOTH_PRE_ROLL } else { Duration::ZERO }
     }
+
+    /// Whether a warm output may flag a silent block as silence
+    /// (`kAudioUnitRenderAction_OutputIsSilence`), which lets CoreAudio skip
+    /// it. Not on Bluetooth: there the headphones get true zeros through the
+    /// hold window, so the A2DP stream does not pause and the next press is
+    /// not swallowed by its resumption (ADR 0001).
+    pub fn flags_silence(self) -> bool {
+        self != Transport::Bluetooth
+    }
 }
 
 /// Fits a requested buffer size into the device's allowed range
@@ -142,6 +152,21 @@ mod tests {
         assert!(BLUETOOTH_PRE_ROLL > Duration::ZERO);
         for other in [Transport::BuiltIn, Transport::Usb, Transport::Display, Transport::Other] {
             assert_eq!(other.pre_roll(), Duration::ZERO, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn bluetooth_outputs_get_real_zeros_so_the_headphones_keep_streaming() {
+        assert!(!Transport::Bluetooth.flags_silence());
+        for other in [
+            Transport::BuiltIn,
+            Transport::Usb,
+            Transport::AirPlay,
+            Transport::Display,
+            Transport::Virtual,
+            Transport::Other,
+        ] {
+            assert!(other.flags_silence(), "{other:?}");
         }
     }
 
