@@ -7,12 +7,15 @@
 //! ```
 //!
 //! Everything both sides read lives in atomics in [`Shared`], so the render
-//! callback never takes a lock.
+//! callback never takes a lock. That includes the current soundpack: the menu
+//! swaps it with one atomic store, the next key press plays from the new pack,
+//! and voices already playing finish from the old one (packs are never freed).
 
 pub mod mixer;
+pub mod preview;
 pub mod ring;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering, fence};
 use std::thread::Thread;
 use std::time::Instant;
 
@@ -50,6 +53,8 @@ pub struct Shared {
     /// Key presses lost because the ring was full.
     pub dropped: AtomicU64,
     epoch: Instant,
+    /// The current soundpack (null: none yet). Only ever set from a `&'static Pack`.
+    pack: AtomicPtr<Pack>,
 }
 
 impl Shared {
@@ -62,7 +67,22 @@ impl Shared {
             first_render: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             epoch: Instant::now(),
+            pack: AtomicPtr::new(std::ptr::null_mut()),
         }
+    }
+
+    /// The soundpack key presses play from. Lock-free: one atomic load.
+    pub fn pack(&self) -> Option<&'static Pack> {
+        let pack = self.pack.load(Ordering::Acquire);
+        // SAFETY: `pack` is null or came from a `&'static Pack` in `set_pack`; packs
+        // are never freed, so it stays valid for the life of the process.
+        unsafe { pack.cast_const().as_ref() }
+    }
+
+    /// Switches soundpack. The next key press uses `pack`; voices already
+    /// playing finish from the previous pack.
+    pub fn set_pack(&self, pack: &'static Pack) {
+        self.pack.store(std::ptr::from_ref(pack).cast_mut(), Ordering::Release);
     }
 
     pub fn enabled(&self) -> bool {
@@ -148,34 +168,43 @@ impl Kick {
 }
 
 /// The key listener's end of the path: turns a key press into a voice request.
-/// Runs on the tap thread: no locks, no allocation.
+/// Runs on the tap thread: no locks, no allocation. It plays from whichever
+/// soundpack [`Shared::pack`] holds at the time of the press.
 pub struct Voicer {
-    pack: &'static Pack,
     producer: Producer<Play>,
     shared: &'static Shared,
     kick: Kick,
 }
 
 impl Voicer {
+    /// A voicer whose current soundpack is `pack` (stored in `shared`, where the
+    /// menu can switch it).
     pub fn new(
         pack: &'static Pack,
         producer: Producer<Play>,
         shared: &'static Shared,
         kick: Kick,
     ) -> Voicer {
-        Voicer { pack, producer, shared, kick }
+        shared.set_pack(pack);
+        Voicer { producer, shared, kick }
     }
 
-    /// Plays the press sound of `keycode`, unless sounds are off.
+    /// Another voicer playing from the same current soundpack, for a second
+    /// thread (the preview). `producer` must feed its own ring.
+    pub fn sharing(producer: Producer<Play>, shared: &'static Shared, kick: Kick) -> Voicer {
+        Voicer { producer, shared, kick }
+    }
+
+    /// Plays the press sound of `keycode` from the current soundpack, unless sounds are off.
     pub fn press(&mut self, keycode: u16) {
         if !self.shared.enabled() {
             return;
         }
-        let Some(samples) = keys::press_clip(self.pack, keycode).and_then(|c| self.pack.clip(c))
-        else {
+        let Some(pack) = self.shared.pack() else { return };
+        let Some(samples) = keys::press_clip(pack, keycode).and_then(|c| pack.clip(c)) else {
             return;
         };
-        let play = Play { samples, src_rate: self.pack.sample_rate, gain: 1.0 };
+        let play = Play { samples, src_rate: pack.sample_rate, gain: 1.0 };
         if !self.producer.push(play) {
             self.shared.dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -191,12 +220,16 @@ mod tests {
     use clicky_pack::{KEY_SLOTS, Meta};
 
     fn pack() -> &'static Pack {
+        pack_with(44_100, [vec![1, 2], vec![3, 4, 5]])
+    }
+
+    /// A pack whose A plays `clips[0]` and Space `clips[1]`.
+    pub(crate) fn pack_with(rate: u32, clips: [Vec<i16>; 2]) -> &'static Pack {
         let mut press = [None; KEY_SLOTS];
         press[usize::from(code::A)] = Some(0);
         press[usize::from(code::SPACE)] = Some(1);
         let meta = Meta { id: "t".into(), ..Meta::default() };
-        let clips = [vec![1, 2], vec![3, 4, 5]];
-        Box::leak(Box::new(Pack::new(meta, 44_100, &clips, press, [None; KEY_SLOTS]).unwrap()))
+        Box::leak(Box::new(Pack::new(meta, rate, &clips, press, [None; KEY_SLOTS]).unwrap()))
     }
 
     fn voicer(enabled: bool) -> (Voicer, ring::Consumer<Play>, &'static Shared) {
@@ -214,6 +247,26 @@ mod tests {
         assert_eq!(play.samples, &[3, 4, 5]);
         assert_eq!(play.src_rate, 44_100);
         assert!(shared.last_key_press().is_some_and(|t| t >= before));
+    }
+
+    #[test]
+    fn switching_soundpack_takes_effect_from_the_next_press_without_cutting_voices() {
+        let (mut voicer, mut ring, shared) = voicer(true);
+        voicer.press(u16::from(code::SPACE));
+        let blue = pack_with(48_000, [vec![7], vec![8, 9]]);
+        shared.set_pack(blue);
+        voicer.press(u16::from(code::SPACE));
+        let before = ring.pop().unwrap();
+        let after = ring.pop().unwrap();
+        assert_eq!(before.samples, &[3, 4, 5], "a press queued before the switch keeps its sound");
+        assert_eq!((after.samples, after.src_rate), (&[8i16, 9][..], 48_000));
+        assert!(std::ptr::eq(shared.pack().unwrap(), blue));
+    }
+
+    #[test]
+    fn nothing_plays_without_a_soundpack() {
+        let shared: &'static Shared = Box::leak(Box::new(Shared::new(true)));
+        assert!(shared.pack().is_none());
     }
 
     #[test]
