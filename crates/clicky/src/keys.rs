@@ -76,13 +76,14 @@ mod flag {
         DEV_LCTL | DEV_LSHIFT | DEV_RSHIFT | DEV_LCMD | DEV_RCMD | DEV_LALT | DEV_RALT | DEV_RCTL;
 }
 
-/// While a key is held and is the last key that went down, a second key-down
-/// without the auto-repeat flag within this long of the previous one is taken
-/// as auto-repeat whose flag was lost. macOS repeats at most every 1.8 s
-/// (slowest setting), so a held key keeps refreshing this window; after it,
-/// the release was lost (e.g. hidden by Secure Keyboard Entry) and the
-/// key-down is a new press.
-const REPEAT_WINDOW: Duration = Duration::from_millis(2_500);
+/// The auto-repeat flag decides: a key-down with it is never a press, one
+/// without it is a new press, even if the key still counts as held (its
+/// release was lost, e.g. hidden by Secure Keyboard Entry). Only a burst is
+/// held back: while a key is held and is the last key that went down, a
+/// key-down without the flag within this long of the previous one is not a
+/// press. It is shorter than the shortest initial key-repeat delay macOS
+/// offers (225 ms), so a lost release mutes the key for at most this long.
+const BURST_WINDOW: Duration = Duration::from_millis(200);
 
 /// Number of `u64` words for one bit per possible `u16` keycode.
 const HELD_WORDS: usize = (u16::MAX as usize + 1) / 64;
@@ -154,11 +155,11 @@ impl KeyState {
         if autorepeat {
             return None;
         }
-        let lost_repeat_flag = self.is_held(keycode)
+        let burst = self.is_held(keycode)
             && last.is_some_and(|(k, at)| {
-                k == keycode && now.saturating_duration_since(at) < REPEAT_WINDOW
+                k == keycode && now.saturating_duration_since(at) < BURST_WINDOW
             });
-        if lost_repeat_flag {
+        if burst {
             return None;
         }
         self.set(keycode, true);
@@ -395,15 +396,31 @@ mod tests {
     }
 
     #[test]
-    fn auto_repeat_without_its_flag_still_cannot_burst() {
+    fn key_downs_without_the_repeat_flag_cannot_burst() {
         let mut keys = Keys::new();
         assert_eq!(keys.down(0, J), Some(Press(J)));
-        for ms in (500..3_000).step_by(30) {
-            assert_eq!(keys.down(ms, J), None, "lost auto-repeat flag at {ms} ms");
+        for ms in (30..3_000).step_by(30) {
+            assert_eq!(keys.down(ms, J), None, "duplicate key-down at {ms} ms");
         }
-        // Even at the slowest key-repeat setting (one repeat every 1.8 s).
-        assert_eq!(keys.down(4_800, J), None);
-        assert_eq!(keys.down(6_600, J), None);
+        // After a pause as long as the initial key-repeat delay, a key-down
+        // without the repeat flag is a new press: the flag decides, and a
+        // stream of flagless repeats sounds at most once more.
+        assert_eq!(keys.down(3_500, J), Some(Press(J)));
+        for ms in (3_530..5_000).step_by(30) {
+            assert_eq!(keys.down(ms, J), None, "flagless repeat at {ms} ms");
+        }
+    }
+
+    #[test]
+    fn a_lost_key_up_mutes_the_key_only_briefly() {
+        // The key went up unseen (e.g. hidden by Secure Keyboard Entry), so it
+        // still counts as held when it is pressed again.
+        let mut keys = Keys::new();
+        assert_eq!(keys.down(0, J), Some(Press(J)));
+        assert_eq!(keys.down(300, J), Some(Press(J)), "the next press sounds");
+        assert_eq!(keys.repeat(800, J), None, "a flagged repeat never does");
+        assert_eq!(keys.up(900, J), Some(Release(J)));
+        assert_eq!(keys.down(1_000, J), Some(Press(J)));
     }
 
     #[test]
