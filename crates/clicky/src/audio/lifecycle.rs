@@ -334,6 +334,50 @@ impl Lifecycle {
     }
 }
 
+/// When to try again a step that keeps failing (creating the output unit),
+/// and which failures are news. Each attempt is made only when a start is
+/// asked for anyway (a key press), never by a timer, and no sooner than the
+/// backoff allows: the wait doubles after each failure, up to a maximum.
+#[derive(Debug)]
+pub struct Retry<K> {
+    first: Duration,
+    max: Duration,
+    delay: Duration,
+    next: Option<Instant>,
+    /// The kinds of failure seen since the last success.
+    seen: Vec<K>,
+}
+
+impl<K: PartialEq> Retry<K> {
+    pub fn new(first: Duration, max: Duration) -> Retry<K> {
+        Retry { first, max, delay: first, next: None, seen: Vec::new() }
+    }
+
+    /// Whether an attempt at `now` may run.
+    pub fn ready(&self, now: Instant) -> bool {
+        self.next.is_none_or(|next| now >= next)
+    }
+
+    /// The attempt at `now` failed with `kind`. Returns whether this kind is
+    /// new since the last success, that is, whether to log it.
+    pub fn failed(&mut self, now: Instant, kind: K) -> bool {
+        self.next = Some(now + self.delay);
+        self.delay = (self.delay * 2).min(self.max);
+        if self.seen.contains(&kind) {
+            return false;
+        }
+        self.seen.push(kind);
+        true
+    }
+
+    /// The attempt succeeded: the next failure starts over.
+    pub fn succeeded(&mut self) {
+        self.delay = self.first;
+        self.next = None;
+        self.seen.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,6 +400,39 @@ mod tests {
         assert_eq!(lifecycle.started(t0, 0), Command::None);
         assert_eq!(lifecycle.state(), State::Warm);
         lifecycle
+    }
+
+    // Retrying a step that failed (creating the output unit).
+
+    #[test]
+    fn a_failing_step_is_retried_on_later_attempts_with_backoff() {
+        let t0 = Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut retry = Retry::new(Duration::from_secs(1), Duration::from_secs(4));
+        assert!(retry.ready(t0), "the first attempt runs");
+        assert!(retry.failed(t0, "error A"), "the first failure is logged");
+        assert!(!retry.ready(ms(999)), "too soon");
+        assert!(retry.ready(ms(1_000)));
+        assert!(!retry.failed(ms(1_000), "error A"), "the same failure is not logged again");
+        assert!(!retry.ready(ms(2_999)), "the wait doubles");
+        assert!(retry.ready(ms(3_000)));
+        assert!(retry.failed(ms(3_000), "error B"), "a new kind of failure is logged once");
+        assert!(!retry.failed(ms(7_000), "error B"));
+        assert!(!retry.ready(ms(10_999)), "capped at the maximum");
+        assert!(retry.ready(ms(11_000)));
+        assert!(!retry.failed(ms(11_000), "error A"));
+    }
+
+    #[test]
+    fn a_success_resets_the_retry() {
+        let t0 = Instant::now();
+        let mut retry = Retry::new(Duration::from_secs(1), Duration::from_secs(60));
+        retry.failed(t0, "error A");
+        retry.failed(at(t0, 1), "error A");
+        retry.succeeded();
+        assert!(retry.ready(at(t0, 1)), "no wait after a success");
+        assert!(retry.failed(at(t0, 2), "error A"), "a failure after a success is news");
+        assert!(retry.ready(at(t0, 3)), "and waits the first delay again");
     }
 
     // Cold start and hold window.

@@ -173,23 +173,46 @@ struct Bound {
 
 /// The output unit. Lives on the audio control thread.
 pub struct Output {
-    unit: Unit,
+    /// `None` until [`Output::create_unit`] succeeds.
+    unit: Option<Unit>,
     /// Leaked on purpose: CoreAudio holds this pointer for the life of the unit,
     /// and the output lives for the life of the process.
     state: *mut RenderState,
     signals: &'static RenderSignals,
     bound: Option<Bound>,
+    /// Whether the default-device listeners are installed.
+    watching_system: bool,
 }
 
+/// What `start` reports when there is no unit yet.
+const NO_UNIT: OsError = OsError { call: "AudioComponentInstanceNew (no unit yet)", status: -1 };
+
 impl Output {
-    /// Creates the unit up front (the first instantiation is slow), cold, and
-    /// starts listening for default-device changes.
-    pub fn new(shared: &'static Shared, input: Consumer<Play>) -> Result<Output, OsError> {
+    /// A cold output without a unit yet: call [`Output::create_unit`] before
+    /// the first start. Only this never fails, so the key ring is never lost.
+    pub fn new(shared: &'static Shared, input: Consumer<Play>) -> Output {
         let signals: &'static RenderSignals = Box::leak(Box::new(RenderSignals::new()));
         let state = Box::into_raw(Box::new(RenderState::new(shared, signals, input)));
-        let unit = Unit::new(state.cast())?;
-        hal::watch_system()?;
-        Ok(Output { unit, state, signals, bound: None })
+        Output { unit: None, state, signals, bound: None, watching_system: false }
+    }
+
+    /// Whether [`Output::create_unit`] has succeeded.
+    pub fn has_unit(&self) -> bool {
+        self.unit.is_some() && self.watching_system
+    }
+
+    /// Creates the unit (the first instantiation is slow) and starts
+    /// listening for default-device changes, whichever is not done yet. Call
+    /// again after a failure to retry.
+    pub fn create_unit(&mut self) -> Result<(), OsError> {
+        if self.unit.is_none() {
+            self.unit = Some(Unit::new(self.state.cast())?);
+        }
+        if !self.watching_system {
+            hal::watch_system()?;
+            self.watching_system = true;
+        }
+        Ok(())
     }
 
     /// Render cycles so far.
@@ -199,6 +222,8 @@ impl Output {
 
     /// Goes warm on the current default output device at its current format.
     pub fn start(&mut self) -> Result<Started, OsError> {
+        let state = self.state;
+        let unit = self.unit.as_mut().ok_or(NO_UNIT)?;
         let device = hal::default_output_device()?;
         let transport = hal::transport(device);
         if let Some(frames) =
@@ -209,28 +234,28 @@ impl Output {
             let _ = hal::set_buffer_frames(device, frames);
         }
         let nominal = hal::nominal_sample_rate(device);
-        let rate = match self.unit.initialize(device, nominal) {
+        let rate = match unit.initialize(device, nominal) {
             Ok(rate) => rate,
             Err(_) => {
                 // A unit that was bound to a vanished device can stay broken:
                 // start over with a fresh one.
-                self.unit = Unit::new(self.state.cast())?;
-                self.unit.initialize(device, nominal)?
+                *unit = Unit::new(state.cast())?;
+                unit.initialize(device, nominal)?
             }
         };
         let pre_roll = transport.pre_roll();
         // A one-channel device gets only our left channel (AUHAL drops the rest).
-        let mono = self.unit.device_channels() == Some(1);
+        let mono = unit.device_channels() == Some(1);
         // SAFETY: the unit is not running, so the IO thread does not use the state.
         unsafe {
-            (*self.state).prepare(rate, device::frames(pre_roll, rate), transport.flags_silence());
-            (*self.state).mixer.set_mono(mono);
+            (*state).prepare(rate, device::frames(pre_roll, rate), transport.flags_silence());
+            (*state).mixer.set_mono(mono);
         }
         // Best effort: without the listeners the watchdog still catches a dead device.
         let _ = hal::watch_device(device);
-        if let Err(e) = self.unit.start() {
+        if let Err(e) = unit.start() {
             hal::unwatch_device(device);
-            self.unit.uninitialize();
+            unit.uninitialize();
             return Err(e);
         }
         self.bound = Some(Bound { device, rate, format: hal::output_format(device) });
@@ -249,8 +274,10 @@ impl Output {
             self.fade_out();
             hal::unwatch_device(bound.device);
         }
-        self.unit.stop();
-        self.unit.uninitialize();
+        if let Some(unit) = self.unit.as_mut() {
+            unit.stop();
+            unit.uninitialize();
+        }
     }
 
     fn fade_out(&self) {

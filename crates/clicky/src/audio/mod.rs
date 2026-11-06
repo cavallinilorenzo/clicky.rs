@@ -21,9 +21,10 @@ use crate::diagnostics::{self, Event};
 use crate::engine::mixer::Play;
 use crate::engine::ring::Consumer;
 use crate::engine::{Kick, Shared};
+use hal::OsError;
 pub use hal::allow_system_sleep;
 pub use lifecycle::HOLD_WINDOW;
-use lifecycle::{Command, Lifecycle, State, WATCHDOG_INTERVAL};
+use lifecycle::{Command, Lifecycle, Retry, State, WATCHDOG_INTERVAL};
 use output::Output;
 pub use power::observe_sleep_wake;
 
@@ -34,6 +35,11 @@ const FIRST_RENDER_WAIT: Duration = Duration::from_secs(2);
 /// warm output: connecting headphones often changes the default device, then
 /// its rate. Well within the 1 s in which the sound must follow the device.
 const SETTLE: Duration = Duration::from_millis(100);
+
+/// After the output unit could not be created, the next key press retries no
+/// sooner than this; the wait doubles with each failure, up to the maximum.
+const UNIT_RETRY_FIRST: Duration = Duration::from_secs(1);
+const UNIT_RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// Completed rebuilds, for the self-test.
 static REBUILDS: AtomicU64 = AtomicU64::new(0);
@@ -61,7 +67,9 @@ pub fn rebuilds() -> u64 {
 
 struct Control {
     shared: &'static Shared,
-    output: Option<Output>,
+    output: Output,
+    /// Paces new attempts to create the output unit after a failure.
+    unit_retry: Retry<OsError>,
     lifecycle: Lifecycle,
     seen_key: Option<Instant>,
     /// When the running output started, for the stop log. Kept here because
@@ -71,17 +79,43 @@ struct Control {
 
 impl Control {
     fn new(shared: &'static Shared, input: Consumer<Play>, hold: Duration) -> Control {
-        let output = Output::new(shared, input)
-            .map_err(|e| {
-                diagnostics::log(Event::Error { context: "audio unit", detail: e.to_string() })
-            })
-            .ok();
-        Control {
+        let mut control = Control {
             shared,
-            output,
+            output: Output::new(shared, input),
+            unit_retry: Retry::new(UNIT_RETRY_FIRST, UNIT_RETRY_MAX),
             lifecycle: Lifecycle::new(hold, WATCHDOG_INTERVAL),
             seen_key: None,
             running_since: None,
+        };
+        // Up front, since the first instantiation is slow; a failure is retried
+        // by the next start.
+        control.ensure_unit(Instant::now());
+        control
+    }
+
+    /// Makes sure the output has its unit, creating it if the backoff allows.
+    /// Logs each kind of failure once per streak. Returns whether it has one.
+    fn ensure_unit(&mut self, now: Instant) -> bool {
+        if self.output.has_unit() {
+            return true;
+        }
+        if !self.unit_retry.ready(now) {
+            return false;
+        }
+        match self.output.create_unit() {
+            Ok(()) => {
+                self.unit_retry.succeeded();
+                true
+            }
+            Err(e) => {
+                if self.unit_retry.failed(now, e) {
+                    diagnostics::log(Event::Error {
+                        context: "audio unit",
+                        detail: format!("{e}; retrying on later key presses"),
+                    });
+                }
+                false
+            }
         }
     }
 
@@ -116,7 +150,7 @@ impl Control {
     }
 
     fn renders(&self) -> u64 {
-        self.output.as_ref().map_or(0, Output::renders)
+        self.output.renders()
     }
 
     /// Acts on signalled sleep, wake and device changes. Returns whether a
@@ -137,8 +171,7 @@ impl Control {
             let command = self.lifecycle.did_wake(Instant::now());
             acted |= self.execute(command);
         }
-        let trigger = self.output.as_ref().and_then(|o| o.confirm(bits & signals::DEVICE_BITS));
-        if let Some(trigger) = trigger {
+        if let Some(trigger) = self.output.confirm(bits & signals::DEVICE_BITS) {
             self.log_trigger(trigger.as_str());
             let command = self.lifecycle.trigger(trigger, Instant::now());
             acted |= self.execute(command);
@@ -176,12 +209,12 @@ impl Control {
     /// Starts the output; returns the lifecycle's follow-up.
     fn start(&mut self, cause: &'static str, rebuild: bool) -> Command {
         let requested = Instant::now();
+        if !self.ensure_unit(requested) {
+            // Already logged (once per kind); the next key press retries.
+            return self.lifecycle.start_failed();
+        }
         self.shared.clear_first_render();
-        let result = match self.output.as_mut() {
-            Some(output) => output.start().map_err(|e| e.to_string()),
-            None => Err("no output unit".to_owned()),
-        };
-        match result {
+        match self.output.start().map_err(|e| e.to_string()) {
             Ok(started) => {
                 let start_ms = ms(requested.elapsed());
                 self.shared.warm.store(true, Ordering::SeqCst);
@@ -218,9 +251,7 @@ impl Control {
     /// Fades out and stops the output, logging why.
     fn stop_output(&mut self, reason: &'static str) {
         let warm_since = self.running_since.take();
-        if let Some(output) = self.output.as_mut() {
-            output.stop();
-        }
+        self.output.stop();
         diagnostics::log(Event::AudioStopped {
             reason,
             warm_secs: warm_since.map_or(0.0, |t| t.elapsed().as_secs_f64()),
