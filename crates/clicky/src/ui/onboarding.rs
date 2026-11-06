@@ -13,10 +13,9 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{MainThreadMarker, MainThreadOnly, available};
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSButton, NSColor, NSFont, NSImage, NSImageScaling,
-    NSImageView, NSLayoutAttribute, NSStackView, NSTextAlignment, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
-    NSWorkspace,
+    NSApplication, NSBackingStoreType, NSButton, NSColor, NSFont, NSImageScaling, NSImageView,
+    NSLayoutAttribute, NSStackView, NSTextAlignment, NSTextField, NSUserInterfaceLayoutOrientation,
+    NSView, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSBundle, NSEdgeInsets, NSPoint, NSRect, NSSize, NSString, NSURL};
 
@@ -257,16 +256,12 @@ impl Window {
         window.setTitlebarAppearsTransparent(true);
         window.setMovableByWindowBackground(true);
 
+        // The app icon (Clicky.icns, named by CFBundleIconFile).
         let icon = NSImageView::new(mtm);
-        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str("keyboard"),
-            Some(&NSString::from_str("Keyboard")),
-        ) {
-            icon.setImage(Some(&image));
-        }
+        icon.setImage(NSApplication::sharedApplication(mtm).applicationIconImage().as_deref());
         icon.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
         icon.widthAnchor().constraintEqualToConstant(72.0).setActive(true);
-        icon.heightAnchor().constraintEqualToConstant(56.0).setActive(true);
+        icon.heightAnchor().constraintEqualToConstant(72.0).setActive(true);
         let title = label(mtm, TITLE, &NSFont::boldSystemFontOfSize(20.0));
         let body = paragraph(mtm, BODY, 13.0, &NSColor::secondaryLabelColor());
         let steps = paragraph(mtm, STEPS, 13.0, &NSColor::labelColor());

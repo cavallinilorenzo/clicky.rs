@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" width="180" height="180">
+  <!-- Full-bleed square: iOS and iPadOS round the corners themselves. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4A7CF0"/>
+      <stop offset="1" stop-color="#1F3FA6"/>
+    </linearGradient>
+  </defs>
+  <rect width="180" height="180" fill="url(#tile)"/>
+  <rect x="31" y="35" width="118" height="118" rx="27" fill="#0D1E57" opacity="0.22"/>
+  <rect x="31" y="31" width="118" height="118" rx="27" fill="#E9E0CF"/>
+  <rect x="43" y="37" width="94" height="89" rx="18.5" fill="#FFFDF8"/>
+  <rect x="71.5" y="103.5" width="37" height="9.5" rx="4.75" fill="#2F5BD3"/>
+</svg>

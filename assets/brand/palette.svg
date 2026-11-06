@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 300" width="960" height="300" font-family="ui-rounded, system-ui, sans-serif">
+  <!-- Clicky palette, for docs only (the labels are live text). -->
+  <rect width="960" height="300" fill="#F7F2EA"/>
+  <g font-size="14" fill="#1F1B17">
+    <rect x="24" y="24" width="210" height="150" rx="20" fill="#2F5BD3"/>
+    <text x="24" y="200" font-weight="700">Navy</text><text x="24" y="220">#2F5BD3</text>
+    <rect x="258" y="24" width="96" height="150" rx="20" fill="#4A7CF0"/>
+    <text x="258" y="200" font-weight="700">Navy light</text><text x="258" y="220">#4A7CF0</text>
+    <rect x="378" y="24" width="96" height="150" rx="20" fill="#7FA2FF"/>
+    <text x="378" y="200" font-weight="700">Sky</text><text x="378" y="220">#7FA2FF</text>
+    <rect x="498" y="24" width="96" height="150" rx="20" fill="#FFFDF8" stroke="#E9E0CF" stroke-width="2"/>
+    <text x="498" y="200" font-weight="700">Cream</text><text x="498" y="220">#FFFDF8</text>
+    <rect x="618" y="24" width="96" height="150" rx="20" fill="#E9E0CF"/>
+    <text x="618" y="200" font-weight="700">Sand</text><text x="618" y="220">#E9E0CF</text>
+    <rect x="738" y="24" width="96" height="150" rx="20" fill="#1F1B17"/>
+    <text x="738" y="200" font-weight="700">Ink</text><text x="738" y="220">#1F1B17</text>
+    <rect x="858" y="24" width="78" height="150" rx="20" fill="#16130F"/>
+    <text x="858" y="200" font-weight="700">Night</text><text x="858" y="220">#16130F</text>
+    <text x="24" y="270" fill="#6B6259">Paper #F7F2EA (background) · Stone #6B6259 (secondary text) · Night surface #221E19 · Stone light #A79D92</text>
+  </g>
+</svg>

@@ -67,6 +67,12 @@ objc2-foundation = { version = "0.3.2", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+# Only the status item's pixel test draws into a bitmap; the app never does.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "NSBitmapImageRep",
+    "NSGraphicsContext",
+    "NSImageRep",
+] }
 serde_json = "1"
 
 [lints]

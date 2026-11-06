@@ -107,7 +107,7 @@ input (CGEventTap, listen-only)            │
 `crates/xtask/src`: `catalog.rs` (which packs ship, in menu order), `sources/` (one adapter per
 source layout: `mechvibes.rs`, `kbsim.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),
 `loudness.rs` (K-weighted 100 ms attack loudness), `packs.rs` (pipeline + invariants, incl. the
-all-21-packs loudness/onset test), `bundle.rs` (universal build, Info.plist,
+all-21-packs loudness/onset test), `bundle.rs` (universal build, Info.plist, app icon,
 bundle layout), `sign.rs` (ADR 0002 signing), `audit.rs` (run by `bundle`: no networking or
 typed-text APIs in the binary, no network entitlements, macOS 13.0 on every slice).
 

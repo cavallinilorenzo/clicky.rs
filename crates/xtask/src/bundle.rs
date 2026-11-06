@@ -14,6 +14,8 @@ use crate::sign;
 pub const APP_NAME: &str = "Clicky";
 pub const BUNDLE_ID: &str = "io.github.cavallinilorenzo.clicky";
 pub const MIN_MACOS: &str = "13.0";
+/// Generated from its SVG by `scripts/build-brand.sh` and committed.
+const APP_ICON: &str = "assets/brand/app-icon/Clicky.icns";
 const TARGETS: [&str; 2] = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
 /// Architectures `lipo -archs` must report for a universal build.
 const ARCHS: [&str; 2] = ["arm64", "x86_64"];
@@ -65,6 +67,7 @@ pub fn run(root: &Path, args: &[String]) -> crate::Result<PathBuf> {
     }
     write(&contents.join("Info.plist"), &info_plist(version))?;
     write(&contents.join("PkgInfo"), "APPL????")?;
+    copy(&root.join(APP_ICON), &resources.join(format!("{APP_NAME}.icns")))?;
     for report in &reports {
         let name = format!("{}.{EXTENSION}", report.id);
         copy(&packs_dir.join(&name), &resources.join("Packs").join(&name))?;
@@ -158,6 +161,8 @@ pub fn info_plist(version: &str) -> String {
 	<string>{APP_NAME}</string>
 	<key>CFBundleExecutable</key>
 	<string>{APP_NAME}</string>
+	<key>CFBundleIconFile</key>
+	<string>{APP_NAME}</string>
 	<key>CFBundleIdentifier</key>
 	<string>{BUNDLE_ID}</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -208,6 +213,7 @@ mod tests {
         for needle in [
             "<key>CFBundleIdentifier</key>\n\t<string>io.github.cavallinilorenzo.clicky</string>",
             "<key>CFBundleExecutable</key>\n\t<string>Clicky</string>",
+            "<key>CFBundleIconFile</key>\n\t<string>Clicky</string>",
             "<key>CFBundleShortVersionString</key>\n\t<string>1.2.3</string>",
             "<key>LSMinimumSystemVersion</key>\n\t<string>13.0</string>",
             "<key>LSUIElement</key>\n\t<true/>",

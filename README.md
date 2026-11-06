@@ -1,4 +1,4 @@
-# clicky.rs
+# <img src="assets/brand/app-icon/app-icon-1024.png" width="48" align="center" alt=""> clicky.rs
 
 **Clicky** is a native macOS menu bar app (macOS 13+, Apple Silicon and Intel)
 that plays a mechanical keyboard sound on every key press. It lives in one menu
@@ -73,6 +73,12 @@ Kunal Bagaria, MIT. The source audio is committed unmodified in
 and matches every pack's loudness. **About Clicky** in the menu shows the
 version and these credits; the full licences are in `THIRD_PARTY_NOTICES.md`
 and, in the app, `Contents/Resources/Licenses`.
+
+## Brand
+
+The mark, the app icon, the palette, type and web tokens live in
+`assets/brand` (guide: `assets/brand/README.md`). Edit the SVGs there, then run
+`scripts/build-brand.sh` to regenerate `Clicky.icns` and the PNGs.
 
 ## Layout
 

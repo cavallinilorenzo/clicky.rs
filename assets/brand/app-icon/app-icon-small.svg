@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Clicky app icon for 16 and 32 px: bigger keycap and a heavier bar, so both survive. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#4A7CF0"/>
+      <stop offset="1" stop-color="#1F3FA6"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#tile)"/>
+  <rect x="200" y="200" width="624" height="624" rx="140" fill="#E9E0CF"/>
+  <rect x="258" y="232" width="508" height="478" rx="96" fill="#FFFDF8"/>
+  <rect x="382" y="560" width="260" height="84" rx="42" fill="#2F5BD3"/>
+</svg>
