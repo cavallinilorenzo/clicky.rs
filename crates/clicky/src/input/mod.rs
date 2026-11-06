@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use crate::diagnostics::{self, Event};
 use crate::engine::Voicer;
-use crate::keys::{KeyEvent, KeyState, LogOnce, Transition};
+use crate::keys::{KeyEvent, KeyState, LogOnce};
 
 /// How often to check the permission while there is no tap.
 const WAITING_CHECK: Duration = Duration::from_secs(1);
@@ -225,10 +225,8 @@ unsafe extern "C" fn tap_callback(
         // At most once per kind per launch; the kind never names the key.
         diagnostics::log(Event::UnrecognisedInput { kind });
     }
-    match state.keys.handle(key_event, Instant::now()) {
-        Some(Transition::Press(keycode)) => state.voicer.press(keycode),
-        // Release sounds are issue #8.
-        Some(Transition::Release(_)) | None => {}
+    if let Some(transition) = state.keys.handle(key_event, Instant::now()) {
+        state.voicer.key(transition);
     }
     event
 }

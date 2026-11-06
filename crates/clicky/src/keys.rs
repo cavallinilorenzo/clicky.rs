@@ -9,8 +9,8 @@
 //! [`KeyState`] decides which events are a physical press or release (one
 //! press per physical press, whatever auto-repeat does); [`press_clip`] picks
 //! the press sound, falling back through the key's class so no key is silent.
-//! Release sounds (issue #8) can use [`Transition::Release`]; nothing plays
-//! them yet.
+//! A [`Transition::Release`] plays the key's own release sound, if Key Release
+//! Sounds is on and the soundpack has one (`engine::Voicer::release`).
 
 use std::time::{Duration, Instant};
 

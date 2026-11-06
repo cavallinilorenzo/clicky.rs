@@ -95,26 +95,29 @@ impl Limiter {
         self.settling = 0;
     }
 
-    /// Limits `x[..out.len()]` into `out`, looking at `x[out.len()..]` ahead.
-    /// `x` holds `out.len() + lookahead` frames; `out.len() <= CHUNK`.
-    /// Real-time safe.
-    pub fn process(&mut self, x: &[f32], out: &mut [f32]) {
-        let n = out.len();
+    /// Limits the stereo frames `x[_][..n]` into `out` (`n` = `out[0].len()`),
+    /// looking at `x[_][n..]` ahead. Each `x[_]` holds `n + lookahead` frames;
+    /// `n <= CHUNK`. Both channels get the same gain, set by the louder one,
+    /// so the stereo image never moves. Real-time safe.
+    pub fn process(&mut self, x: [&[f32]; 2], out: [&mut [f32]; 2]) {
+        let [out_l, out_r] = out;
+        let n = out_l.len().min(out_r.len());
         let la = self.lookahead;
-        let x = &x[..n + la];
+        let (x_l, x_r) = (&x[0][..n + la], &x[1][..n + la]);
         let need = &mut self.need[..n + la];
         let mut limiting = self.envelope < 1.0 || self.settling > 0;
-        for (r, s) in need.iter_mut().zip(x) {
-            let a = s.abs();
+        for ((r, l), s) in need.iter_mut().zip(x_l).zip(x_r) {
+            let a = l.abs().max(s.abs());
             *r = if a > TARGET { TARGET / a } else { 1.0 };
             limiting |= *r < 1.0;
         }
         if !limiting {
-            out.copy_from_slice(&x[..n]);
+            out_l[..n].copy_from_slice(&x_l[..n]);
+            out_r[..n].copy_from_slice(&x_r[..n]);
             return;
         }
         let span = self.first.len + self.second.len;
-        for (t, o) in out.iter_mut().enumerate() {
+        for t in 0..n {
             let hold = need[t..=t + la].iter().copied().fold(1.0f32, f32::min);
             let mut env = self.envelope + (1.0 - self.envelope) * self.release;
             if env > 0.999_999 {
@@ -124,7 +127,9 @@ impl Limiter {
             self.envelope = env;
             self.settling = if env < 1.0 { span } else { self.settling.saturating_sub(1) };
             let smooth = self.second.push(self.first.push(env));
-            *o = x[t] * smooth.min(need[t]);
+            let g = smooth.min(need[t]);
+            out_l[t] = x_l[t] * g;
+            out_r[t] = x_r[t] * g;
         }
     }
 }
