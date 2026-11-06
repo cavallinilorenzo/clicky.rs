@@ -1,5 +1,6 @@
 //! Build tooling for Clicky: `cargo xtask <command>`.
 
+mod audit;
 mod bundle;
 mod catalog;
 mod decode;
@@ -21,8 +22,10 @@ const USAGE: &str = "usage: cargo xtask <command>
 
 commands:
   packs               convert assets/soundpacks into target/packs/*.clickypack
-  bundle [options]    build target/bundle/Clicky.app (universal) and sign it
+  bundle [options]    build target/bundle/Clicky.app (universal), sign and audit it
   run [options]       bundle, then quit any running Clicky and open the new one
+  audit [app]         check the app for networking, typed-text APIs and its minimum
+                      macOS (default target/bundle/Clicky.app; bundle runs it too)
 
 options:
   --native            build for this Mac's architecture only (default: universal)
@@ -36,6 +39,10 @@ fn main() -> ExitCode {
         Some("packs") => packs::run(&root),
         Some("bundle") => bundle::run(&root, rest).map(|_| ()),
         Some("run") => bundle::run(&root, rest).and_then(|app| bundle::launch(&app)),
+        Some("audit") => audit::run(&rest.first().map_or_else(
+            || root.join("target/bundle").join(format!("{}.app", bundle::APP_NAME)),
+            PathBuf::from,
+        )),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);

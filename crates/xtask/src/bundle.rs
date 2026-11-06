@@ -77,6 +77,7 @@ pub fn run(root: &Path, args: &[String]) -> crate::Result<PathBuf> {
     }
 
     let signature = sign::sign(&app, options.adhoc)?;
+    crate::audit::run(&app)?;
     println!(
         "{} ({}; {} soundpack(s)), {}",
         app.display(),
