@@ -27,6 +27,7 @@ pub fn run() {
     }
 
     let shared: &'static Shared = Box::leak(Box::new(Shared::new(store.get(&SOUNDS_ON))));
+    crate::engine::mixer::restore_volume(shared, &store); // #6: the saved volume
     let (producer, consumer) = ring::ring(RING_CAPACITY);
     let (consumer, preview_producer) = consumer.with_producer(PREVIEW_CAPACITY);
     let kick = audio::spawn(shared, consumer, audio::HOLD_WINDOW);

@@ -9,6 +9,7 @@ mod permission;
 mod quit;
 mod sound_switch;
 mod soundpack;
+mod volume;
 
 use std::rc::Rc;
 
@@ -36,7 +37,7 @@ pub fn build(ui: &Rc<Ui>) -> Menu {
     let mut menu = MenuBuilder::new(ui);
     sound_switch::add(&mut menu);
     soundpack::add(&mut menu); // #7: soundpack picker
-    // #6: volume slider
+    volume::add(&mut menu); // #6: volume slider
     // #8: Key Release Sounds, Natural Variation, Spatial Stereo
     launch_at_login::add(&mut menu); // #9: Launch at Login
     permission::add(&mut menu); // #9: the permission rows (only while sounds are unavailable)

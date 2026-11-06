@@ -35,7 +35,9 @@ input (CGEventTap, listen-only)            │
   (missing / listening / revoked / needs relaunch). Each change is posted to the
   main queue, where the status icon and the first-run window follow it.
 - The **render callback** drains the ring into the `Mixer` and renders. No locks,
-  no allocation, no logging. It records the first render after each start.
+  no allocation, no logging. It records the first render after each start. The
+  mixer resamples each voice to the device rate, fades out stolen voices, ramps the
+  master gain per frame and ends in a zero-latency look-ahead limiter (see below).
 - The **audio control thread** owns the output. It sleeps while cold. A key press
   while cold wakes it; it starts the output (the press waits in the ring and plays
   on the first render, after the pre-roll on Bluetooth). While warm it wakes only
@@ -44,6 +46,8 @@ input (CGEventTap, listen-only)            │
   fades out and rebuilds the output at the device's current format.
 - The **main thread** runs the menu. The on/off switch writes `Shared` and the
   settings; turning sounds off makes the mixer ramp to silence within one block.
+  The volume slider sets the master gain (`Shared::set_master_gain`) on every move
+  and saves `VOLUME`; `app.rs` applies the saved volume at launch.
 - Soundpacks are built at build time (`cargo xtask packs`) from the committed
   source audio. At launch the app reads every pack's description from
   `Clicky.app/Contents/Resources/Packs` and the audio of the saved one; a pack's
@@ -64,7 +68,10 @@ input (CGEventTap, listen-only)            │
 | `engine/mod.rs` | `Shared` atomics (including the current soundpack, an `AtomicPtr` swapped by the picker), `Kick`, `Voicer`; `SOUNDS_ON` setting, `MASTER_GAIN`. | yes |
 | `engine/preview.rs` | The pick preview: its own thread, `Voicer` and ring press a short "rust ⏎" from the current soundpack; picking again restarts it. | yes |
 | `engine/ring.rs` | Wait-free SPSC ring; `Consumer::with_producer` chains a second ring (the preview's) into the same consumer. | yes |
-| `engine/mixer.rs` | Voice pool, resampling, master-gain ramp, clamp. | yes |
+| `engine/mixer.rs` | Voice pool (32 voices + 16 slots for stolen voices fading out over 5 ms), master-gain ramp (≤ full scale per 20 ms, one-pole smoothed, per frame), headroom, `VOLUME` setting and `volume_gain` (dB curve). | yes |
+| `engine/mixer/resample.rs` | Kaiser-windowed sinc (32 zero crossings, β = 9, cutoff 0.95 × the lower Nyquist), 256-phase polyphase tables built and cached off the real-time path. | yes (via the mixer) |
+| `engine/mixer/limiter.rs` | Look-ahead peak limiter, ceiling −1 dBFS, 1.5 ms look-ahead with no latency (voices are rendered ahead), 60 ms release. | yes (via the mixer) |
+| `engine/mixer/stress.rs` | The offline stress render (tests only): fast typing, mashing, 10 keys held 60 s, steal storm, slider while typing, at 44.1/48/96 kHz. | test |
 | `audio/lifecycle.rs` | ADR 0001 policy as a pure state machine (cold / starting / warm, hold window, rebuild triggers, sleep/wake, watchdog); time and render counts are passed in. | yes |
 | `audio/device.rs` | Transport kinds and what they imply: small buffer only on built-in, `BLUETOOTH_PRE_ROLL` (provisional) only on Bluetooth. | yes |
 | `audio/mod.rs` | The control thread: drives the lifecycle against the output, confirms device signals, logs every start, stop, rebuild and trigger with its cause and first-render time. | |
@@ -82,7 +89,7 @@ input (CGEventTap, listen-only)            │
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
 | `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). | yes (state) |
 | `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order. | |
-| `ui/menu/sound_switch.rs`, `soundpack.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
+| `ui/menu/sound_switch.rs`, `soundpack.rs`, `volume.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
 | `ui/menu/launch_at_login.rs` | "Launch at Login" over `SMAppService.mainAppService`, behind the `LoginItem` seam; reads the real state on each menu open. | yes (toggle, view) |
 | `ui/menu/permission.rs` | The rows shown while sounds are unavailable for lack of permission, with the fix. | yes (rows) |
 
@@ -98,7 +105,7 @@ bundle layout), `sign.rs` (ADR 0002 signing).
 |---|---|---|
 | #4 Output lifecycle | `audio/lifecycle.rs` (new events/states: device change, sample rate, sleep/wake, watchdog, pre-roll), `audio/output.rs` (listeners, rebuild, built-in buffer size), `audio/mod.rs`, new `audio/devices.rs` etc., `audio/ffi.rs` | new `Event` variants in `diagnostics.rs` |
 | #5 Key mapping (done) | `keys.rs`, `input/mod.rs`, `input/media.rs`, `input/ffi.rs`, `clicky-pack/src/keys.rs` (`KeyClass`, `class`, `fallbacks`, `media_keycode`) | `Event::UnrecognisedInput` in `diagnostics.rs`; `Voicer::press` unchanged |
-| #6 Mixer, limiter, volume | `engine/mixer.rs` (+ an offline stress-render test), new `ui/menu/volume.rs` | one line in `ui/menu/mod.rs::build`; `VOLUME` setting next to the mixer; `Shared::set_master_gain` already exists |
+| #6 Mixer, limiter, volume (done) | `engine/mixer.rs`, `engine/mixer/{resample,limiter,stress}.rs`, `ui/menu/volume.rs` | one line in `ui/menu/mod.rs::build`; one line in `app.rs` (saved volume at launch); `VOLUME` setting in `engine/mixer.rs`; objc2 features `NSImageView`, `NSSlider` |
 | #7 21 packs, picker, About | `assets/soundpacks/**`, `crates/xtask/src/sources/kbsim.rs`, `catalog.rs`, `packs.rs` (app: library of all packs, `SELECTED_PACK` setting), new `ui/menu/soundpack.rs`, `ui/menu/about.rs`, `THIRD_PARTY_NOTICES.md` | two lines in `ui/menu/mod.rs::build`; `Voicer` needs a switchable pack (e.g. an atomic pointer) in `engine/mod.rs`; the `SourceKind` enum |
 | #8 Sound options | `keys.rs`/`engine` voicer options, new `ui/menu/options.rs`; release sounds hang off `Transition::Release` in `input/mod.rs` | one line in `ui/menu/mod.rs::build`; `Play` gains per-voice pan/pitch |
 | #9 First run, permission, Launch at Login (done) | new `ui/onboarding.rs`, `ui/menu/launch_at_login.rs`, `ui/menu/permission.rs`, `input/permission.rs` | one line each in `ui/menu/mod.rs::build`; a `NeedsPermission` state in `ui/status_item.rs`; `input::start`'s retry loop |
@@ -130,3 +137,24 @@ Never rename a shipped settings key (`SoundsOn`, `DiagnosticsLog`).
   call `CGEventKeyboardGetUnicodeString` or anything that yields characters, and never
   log a keycode. `diagnostics::Event` has no variant that can carry one
   (`UnrecognisedInput` carries only a fixed description of the kind).
+
+## Sound quality (`engine/mixer`)
+
+Measured by the tests (`cargo test`), in the dev profile, on synthetic signals.
+
+| What | How it is measured | Result |
+|---|---|---|
+| Resampler passband | Sines 100 Hz–18 kHz at 0.5 FS, 44.1↔48 kHz and 44.1/48→96 kHz, least-squares fit | gain within ±0.0003 dB (test bound ±0.05 dB) |
+| Resampler images, aliases and interpolation error | Residual after the fit, same sines | −91 to −99 dB, which is the 16-bit quantisation floor of the test clip (bound −80 dB) |
+| Alias rejection | 22.8 / 23.5 kHz at 48 kHz played on a 44.1 kHz device | −82.7 / −90.8 dB (bound −80 dB) |
+| Full scale | Every sample of every stress render | peak −1.00 dBFS (the ceiling) under mashing, steal storm and 10 held keys, voice gains up to +2 dB |
+| Discontinuities | Peak of an 8th-order 8 kHz high-pass of the output (test clips have nothing above 2 kHz), outside 2.5 ms after each audible keystroke onset; a test proves it catches a −50 dBFS step and the steal storm catches a hard-cut steal | worst −73.9 dBFS (mashing), −79.5 (steal storm), −82.0 (slider while typing); bound −66 dBFS |
+| Volume ramp | DC held through a random volume sweep at 44.1/48/96 kHz | no frame step above full scale / 20 ms |
+
+The limiter adds no latency. The mixer renders every voice 1.5 ms ahead of what it
+outputs, and the limiter turns the gain down along a smooth curve before each peak
+arrives. The only peaks it cannot foresee are those of a keystroke that starts in the
+current block, within its first 1.5 ms. A final per-frame `min` keeps the ceiling
+exact there too. That is the only place where the gain can move abruptly, and it
+happens at a keystroke onset.
+
