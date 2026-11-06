@@ -16,10 +16,12 @@ pub fn add(menu: &mut MenuBuilder) {
         diagnostics::set_enabled(on);
         ui.store.set(&LOG_ENABLED, &on);
     });
-    let tooltip = format!(
-        "Record audio start/stop and errors (never keys) in {}",
-        diagnostics::log_path().display()
-    );
+    let tooltip = match diagnostics::log_path() {
+        Some(path) => {
+            format!("Record audio start/stop and errors (never keys) in {}", path.display())
+        }
+        None => "Unavailable: no home folder to write the log to".to_owned(),
+    };
     item.setToolTip(Some(&NSString::from_str(&tooltip)));
 
     let shown = item.clone();
