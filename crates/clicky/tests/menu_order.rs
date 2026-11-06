@@ -106,6 +106,9 @@ fn rows_shown_only_sometimes_keep_the_order() {
     let diagnostics = rows.iter().position(|row| row.text == "Diagnostics Log").unwrap();
     assert!(rows[diagnostics].hidden, "only shown with Option held");
     assert!(at("About") < diagnostics && diagnostics < at("Quit"));
+    // An alternate item: it takes About's place while Option is held, so it
+    // must come right after it.
+    assert_eq!(diagnostics, at("About") + 1, "Diagnostics Log is About's alternate");
 }
 
 /// Without Input Monitoring, the permission rows lead the menu, above the

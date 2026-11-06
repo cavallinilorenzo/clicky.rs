@@ -1,21 +1,25 @@
-//! "Diagnostics Log": a hidden toggle, shown only when the menu is opened
-//! with Option held. Reading the modifier state tells us only that Option is
-//! down, never what is typed.
+//! "Diagnostics Log": a hidden toggle, the alternate of "About Clicky". AppKit
+//! shows it in About's place while Option is held, including when Option is
+//! pressed or released with the menu already open. We never read the
+//! modifier state ourselves.
 
-use objc2_app_kit::{NSEvent, NSEventModifierFlags};
+use objc2_app_kit::NSEventModifierFlags;
 use objc2_foundation::NSString;
 
 use super::{MenuBuilder, control_state};
 use crate::diagnostics::{self, LOG_ENABLED};
 
+/// Must come right after `about::add`: an alternate item follows its base
+/// item, with the same (empty) key equivalent and another modifier mask.
 pub fn add(menu: &mut MenuBuilder) {
-    let separator = menu.separator();
     let ui = menu.ui().clone();
     let item = menu.item("Diagnostics Log", move |_| {
         let on = !diagnostics::is_enabled();
         diagnostics::set_enabled(on);
         ui.store.set(&LOG_ENABLED, &on);
     });
+    item.setKeyEquivalentModifierMask(NSEventModifierFlags::Option);
+    item.setAlternate(true);
     let tooltip = match diagnostics::log_path() {
         Some(path) => {
             format!("Record audio start/stop and errors (never keys) in {}", path.display())
@@ -25,10 +29,5 @@ pub fn add(menu: &mut MenuBuilder) {
     item.setToolTip(Some(&NSString::from_str(&tooltip)));
 
     let shown = item.clone();
-    menu.on_open(move || {
-        let option = NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Option);
-        separator.setHidden(!option);
-        shown.setHidden(!option);
-        shown.setState(control_state(diagnostics::is_enabled()));
-    });
+    menu.on_open(move || shown.setState(control_state(diagnostics::is_enabled())));
 }

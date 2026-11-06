@@ -55,7 +55,7 @@ pub fn build(ui: &Rc<Ui>) -> Menu {
     options::add(&mut menu); // #8: Key Release Sounds, Natural Variation, Spatial Stereo
     launch_at_login::add(&mut menu); // #9: Launch at Login
     about::add(&mut menu); // #7: About
-    diagnostics::add(&mut menu);
+    diagnostics::add(&mut menu); // About's alternate (Option held): right after About
     quit::add(&mut menu);
     menu.finish()
 }
@@ -130,7 +130,8 @@ impl MenuBuilder {
 /// One line per item of `menu`, top to bottom, for `Clicky --menu`: `---` for
 /// a separator, `<switch>` / `<slider>` for a row holding that control,
 /// `<submenu>` for an item that opens one, else its title; `[hidden] ` before
-/// items not shown right now.
+/// items not shown right now, and before alternates (shown only while their
+/// modifier is held, in place of the item above them).
 pub fn describe(menu: &NSMenu) -> Vec<String> {
     let holds = |item: &NSMenuItem, class: &AnyClass| {
         item.view()
@@ -151,7 +152,7 @@ pub fn describe(menu: &NSMenu) -> Vec<String> {
             } else {
                 item.title().to_string()
             };
-            if item.isHidden() { format!("[hidden] {text}") } else { text }
+            if item.isHidden() || item.isAlternate() { format!("[hidden] {text}") } else { text }
         })
         .collect()
 }
