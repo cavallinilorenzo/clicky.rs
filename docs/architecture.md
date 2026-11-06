@@ -82,7 +82,7 @@ input (CGEventTap, listen-only)            │
 | `engine/mixer/limiter.rs` | Look-ahead peak limiter, ceiling −1 dBFS, 1.5 ms look-ahead with no latency (voices are rendered ahead), 60 ms release; one gain for both channels, set by the louder. | yes (via the mixer) |
 | `engine/mixer/stress.rs` | The offline stress render (tests only): fast typing, mashing, 10 keys held 60 s, steal storm, slider while typing, at 44.1/48/96 kHz, with Natural Variation and Spatial Stereo on (and fast typing with both off); both channels checked. | test |
 | `audio/lifecycle.rs` | ADR 0001 policy as a pure state machine (cold / starting / warm, hold window, rebuild triggers, sleep/wake, watchdog); time and render counts are passed in. | yes |
-| `audio/device.rs` | Transport kinds and what they imply: small buffer only on built-in, `BLUETOOTH_PRE_ROLL` (provisional) only on Bluetooth. | yes |
+| `audio/device.rs` | Transport kinds and what they imply: small buffer only on built-in; `BLUETOOTH_PRE_ROLL` (provisional) and `flags_silence` (false: true zeros while warm, never `OutputIsSilence`) only on Bluetooth. | yes |
 | `audio/mod.rs` | The control thread: drives the lifecycle against the output, confirms device signals, logs every start, stop, rebuild and trigger with its cause and first-render time. | |
 | `audio/signals.rs` | Signal bits from CoreAudio listeners and sleep/wake to the control thread (set a bit, unpark). | yes |
 | `audio/hal.rs` | CoreAudio HAL queries (default device, transport, rate, format, buffer), `allow_system_sleep`, property listeners. | |

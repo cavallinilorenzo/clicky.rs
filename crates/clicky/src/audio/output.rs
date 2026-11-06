@@ -58,7 +58,8 @@ impl RenderSignals {
 pub enum Block {
     /// Voices sounded.
     Sound,
-    /// Nothing sounded (CoreAudio may skip the zeros).
+    /// Nothing sounded: zeros, which CoreAudio may skip where the transport
+    /// allows it (`RenderState::flags_silence`).
     Silence,
     /// Pre-roll silence, written out on purpose so the device keeps streaming.
     PreRoll,
@@ -73,6 +74,9 @@ pub struct RenderState {
     input: Consumer<Play>,
     /// Frames of pre-roll silence left before queued voices may start.
     pre_roll: u32,
+    /// Whether silent blocks may be flagged as silence (not on Bluetooth,
+    /// `Transport::flags_silence`).
+    flag_silence: bool,
 }
 
 impl RenderState {
@@ -81,17 +85,33 @@ impl RenderState {
         signals: &'static RenderSignals,
         input: Consumer<Play>,
     ) -> RenderState {
-        RenderState { shared, signals, mixer: Mixer::new(FALLBACK_RATE), input, pre_roll: 0 }
+        RenderState {
+            shared,
+            signals,
+            mixer: Mixer::new(FALLBACK_RATE),
+            input,
+            pre_roll: 0,
+            flag_silence: true,
+        }
     }
 
     /// Readies a start at `rate`. Only while the unit is stopped. A fresh mixer
     /// means the first voice plays at full gain from its first sample, with no
     /// ramp left over from the fade that ended the previous run.
-    pub fn prepare(&mut self, rate: f64, pre_roll_frames: u32) {
+    /// `flag_silence` is the transport's [`Transport::flags_silence`].
+    pub fn prepare(&mut self, rate: f64, pre_roll_frames: u32, flag_silence: bool) {
         self.mixer = Mixer::new(rate);
         self.pre_roll = pre_roll_frames;
+        self.flag_silence = flag_silence;
         self.signals.fade.store(false, Ordering::Release);
         self.signals.faded.store(false, Ordering::Release);
+    }
+
+    /// Whether the render callback flags `block` as silence, so CoreAudio
+    /// may skip it. Only silent blocks, and never on an output that must keep
+    /// streaming (Bluetooth): those get the zeros `fill` wrote.
+    pub fn flags_silence(&self, block: Block) -> bool {
+        block == Block::Silence && self.flag_silence
     }
 
     /// One render cycle into `left` and `right`. Real-time: no allocation,
@@ -203,7 +223,7 @@ impl Output {
         let mono = self.unit.device_channels() == Some(1);
         // SAFETY: the unit is not running, so the IO thread does not use the state.
         unsafe {
-            (*self.state).prepare(rate, device::frames(pre_roll, rate));
+            (*self.state).prepare(rate, device::frames(pre_roll, rate), transport.flags_silence());
             (*self.state).mixer.set_mono(mono);
         }
         // Best effort: without the listeners the watchdog still catches a dead device.
@@ -458,7 +478,7 @@ unsafe extern "C" fn render(
         }
         [] => Block::Silence,
     };
-    if block == Block::Silence {
+    if state.flags_silence(block) {
         // SAFETY: `flags` is a valid in/out pointer for the duration of the call.
         unsafe { *flags |= ffi::kAudioUnitRenderAction_OutputIsSilence };
     }
@@ -506,7 +526,7 @@ mod tests {
     fn a_press_queued_during_a_cold_start_plays_at_full_level_on_the_first_render() {
         let (mut state, mut ring, _) = render_state();
         assert!(ring.push(press()), "pressed while the output was still starting");
-        state.prepare(48_000.0, 0);
+        state.prepare(48_000.0, 0, true);
         let (block, out) = block(&mut state, 128);
         assert_eq!(block, Block::Sound);
         assert_eq!(out[0], LEVEL, "no fade-in on the first sample");
@@ -516,17 +536,32 @@ mod tests {
     #[test]
     fn silence_is_reported_as_silence() {
         let (mut state, _ring, _) = render_state();
-        state.prepare(48_000.0, 0);
+        state.prepare(48_000.0, 0, true);
         let (block, out) = block(&mut state, 64);
         assert_eq!(block, Block::Silence);
         assert!(out.iter().all(|s| *s == 0.0));
+        assert!(state.flags_silence(block), "CoreAudio may skip it");
+    }
+
+    #[test]
+    fn a_warm_output_that_must_keep_streaming_never_flags_silence() {
+        // Bluetooth (ADR 0001): the headphones get real zeros through the hold window.
+        let (mut state, mut ring, _) = render_state();
+        state.prepare(48_000.0, 0, false);
+        let (silent, out) = block(&mut state, 64);
+        assert_eq!(silent, Block::Silence);
+        assert!(out.iter().all(|s| *s == 0.0), "true zeros");
+        assert!(!state.flags_silence(silent));
+        ring.push(press());
+        let (sound, _) = block(&mut state, 64);
+        assert!(!state.flags_silence(sound));
     }
 
     #[test]
     fn the_pre_roll_holds_queued_presses_back_then_plays_them() {
         let (mut state, mut ring, _) = render_state();
         ring.push(press());
-        state.prepare(48_000.0, 200);
+        state.prepare(48_000.0, 200, true);
         for _ in 0..2 {
             let (block, out) = block(&mut state, 128);
             assert_eq!(block, Block::PreRoll, "written-out silence, not flagged as silence");
@@ -541,7 +576,7 @@ mod tests {
     #[test]
     fn a_fade_ramps_to_silence_within_one_block_and_keeps_queued_presses() {
         let (mut state, mut ring, signals) = render_state();
-        state.prepare(48_000.0, 0);
+        state.prepare(48_000.0, 0, true);
         ring.push(press());
         assert_eq!(block(&mut state, 64).0, Block::Sound);
 
@@ -555,7 +590,7 @@ mod tests {
         assert_eq!(block_after, Block::Silence, "stays silent until the stop");
         assert!(after.iter().all(|s| *s == 0.0));
 
-        state.prepare(44_100.0, 0);
+        state.prepare(44_100.0, 0, true);
         assert!(!signals.fade.load(Ordering::Acquire));
         let (block_rebuilt, rebuilt) = block(&mut state, 64);
         assert_eq!(block_rebuilt, Block::Sound, "the press made during the fade plays after it");
@@ -565,7 +600,7 @@ mod tests {
     #[test]
     fn every_render_cycle_counts_for_the_watchdog() {
         let (mut state, _ring, signals) = render_state();
-        state.prepare(48_000.0, 64);
+        state.prepare(48_000.0, 64, true);
         block(&mut state, 64);
         block(&mut state, 64);
         signals.fade.store(true, Ordering::Release);

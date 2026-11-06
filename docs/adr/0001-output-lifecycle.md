@@ -13,6 +13,7 @@ We decided:
 ## Values in use
 
 - **Pre-roll: 250 ms on Bluetooth outputs, provisional.** `BLUETOOTH_PRE_ROLL` in `audio/device.rs` is the only place it is set. AirPods cold starts measured ~470–490 ms to the first render (#3); the pre-roll is silence played after that first render, because A2DP sinks often swallow the first ~100–250 ms of a resumed stream. It stays provisional until Lorenzo's listening tests (device × 1/5/30 min × 10) confirm or replace it; record the chosen value and the date here. It applies after every cold start and rebuild on Bluetooth, never on other transports.
+- **Warm silence on Bluetooth: true zeros.** While warm, a Bluetooth output renders zeros and never flags a block `kAudioUnitRenderAction_OutputIsSilence`, so the A2DP stream does not pause during the hold window (`Transport::flags_silence` in `audio/device.rs`). Other transports flag silent blocks, which lets CoreAudio skip them.
 - **Built-in buffer: 128 frames** (2.7–2.9 ms at 44.1–48 kHz), requested per process and clamped to the device's range.
 - **Watchdog: 2 s.** A warm output whose render count did not move for a whole interval is rebuilt.
 - **Settle: 100 ms.** Device notifications for a warm output wait this long so that a burst (default device, then its rate) causes one rebuild, well within the 1 s budget.
