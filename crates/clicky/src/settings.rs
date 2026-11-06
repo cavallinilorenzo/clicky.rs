@@ -183,6 +183,7 @@ impl UserDefaults {
     }
 
     /// A separate defaults domain, so tests never touch the real settings.
+    /// `name` may be an absolute path: the values then live in `<name>.plist`.
     #[cfg(test)]
     pub fn suite(name: &str) -> UserDefaults {
         use objc2::AnyThread;
@@ -193,42 +194,38 @@ impl UserDefaults {
         .expect("valid suite name");
         UserDefaults { defaults }
     }
-
-    /// Removes the suite's values and its preferences file, which
-    /// `removePersistentDomainForName` alone leaves behind, empty. The file
-    /// is written back by `cfprefsd` asynchronously, so the removal is
-    /// flushed first; otherwise the empty file reappears after the delete.
-    #[cfg(test)]
-    pub fn remove_suite(name: &str) {
-        NSUserDefaults::standardUserDefaults()
-            .removePersistentDomainForName(&NSString::from_str(name));
-        UserDefaults::suite(name).defaults.synchronize();
-        if let Some(home) = std::env::var_os("HOME") {
-            let file =
-                std::path::Path::new(&home).join(format!("Library/Preferences/{name}.plist"));
-            let _ = std::fs::remove_file(file);
-        }
-    }
 }
 
-/// A defaults suite of its own for one test,
-/// `io.github.cavallinilorenzo.clicky.tests.<area>.<pid>`. Dropping it
-/// removes the suite and its preferences file, also when the test panics.
+/// A defaults suite of its own for one test, stored as `settings.plist` in a
+/// private folder under the temporary directory, never in
+/// `~/Library/Preferences`. (A named suite leaves an empty plist there:
+/// `cfprefsd` writes it back seconds after the domain is removed, too late
+/// for any cleanup.) Dropping it removes the domain and the folder, also when
+/// the test panics.
 #[cfg(test)]
 pub struct TestSuite {
+    dir: std::path::PathBuf,
+    /// The suite name: the folder's `settings`, as an absolute path.
     name: String,
 }
 
 #[cfg(test)]
 impl TestSuite {
     pub fn new(area: &str) -> TestSuite {
-        TestSuite {
-            name: format!("io.github.cavallinilorenzo.clicky.tests.{area}.{}", std::process::id()),
-        }
+        let dir = std::env::temp_dir().join(format!("clicky-tests-{area}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a folder for the test suite");
+        let name = dir.join("settings").display().to_string();
+        TestSuite { dir, name }
     }
 
+    /// The suite name, for [`UserDefaults::suite`] in another process.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The file the suite is stored in.
+    pub fn file(&self) -> std::path::PathBuf {
+        self.dir.join("settings.plist")
     }
 
     /// A store over the suite, as a fresh launch would open it.
@@ -240,7 +237,9 @@ impl TestSuite {
 #[cfg(test)]
 impl Drop for TestSuite {
     fn drop(&mut self) {
-        UserDefaults::remove_suite(&self.name);
+        NSUserDefaults::standardUserDefaults()
+            .removePersistentDomainForName(&NSString::from_str(&self.name));
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -323,37 +322,32 @@ mod tests {
         assert_eq!(second.get(&NAME), "red");
     }
 
-    /// The preferences file of `suite`.
-    fn plist(suite: &str) -> std::path::PathBuf {
-        let home = std::env::var_os("HOME").expect("HOME");
-        std::path::Path::new(&home).join(format!("Library/Preferences/{suite}.plist"))
-    }
-
     #[test]
-    fn a_test_suite_leaves_no_file_behind() {
+    fn a_test_suite_lives_in_a_temporary_folder_that_is_removed() {
         let suite = TestSuite::new("cleanup");
-        let name = suite.name().to_owned();
+        let file = suite.file();
         let store = suite.store();
         store.set(&FLAG, &false);
         assert!(!suite.store().get(&FLAG));
+        assert!(file.exists(), "the values are stored in {}", file.display());
+        assert!(file.starts_with(std::env::temp_dir()), "not in ~/Library/Preferences");
+        let dir = file.parent().unwrap().to_owned();
         drop(store);
         drop(suite);
-        assert!(!plist(&name).exists(), "{} is left behind", plist(&name).display());
-        assert!(Store::with_backend(UserDefaults::suite(&name)).get(&FLAG), "the values are gone");
-        UserDefaults::remove_suite(&name);
+        assert!(!dir.exists(), "{} is left behind", dir.display());
     }
 
     #[test]
     fn a_test_suite_is_removed_even_when_the_test_fails() {
-        let name = std::sync::Mutex::new(String::new());
+        let dir = std::sync::Mutex::new(std::path::PathBuf::new());
         let panicked = std::panic::catch_unwind(|| {
             let suite = TestSuite::new("panic");
-            *name.lock().unwrap() = suite.name().to_owned();
+            *dir.lock().unwrap() = suite.file().parent().unwrap().to_owned();
             suite.store().set(&LEVEL, &0.1);
-            panic!("a failed assertion");
+            panic!("a failed assertion (expected by this test)");
         });
         assert!(panicked.is_err());
-        let name = name.into_inner().unwrap();
-        assert!(!plist(&name).exists(), "{} is left behind", plist(&name).display());
+        let dir = dir.into_inner().unwrap();
+        assert!(!dir.exists(), "{} is left behind", dir.display());
     }
 }
