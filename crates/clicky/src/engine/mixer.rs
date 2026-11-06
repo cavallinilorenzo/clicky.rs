@@ -47,6 +47,7 @@ impl Mixer {
     }
 
     /// Sets the device sample rate. Voices started afterwards are resampled to it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "#4 starts each run with a fresh Mixer"))]
     pub fn set_out_rate(&mut self, out_rate: f64) {
         if out_rate > 0.0 {
             self.out_rate = out_rate;

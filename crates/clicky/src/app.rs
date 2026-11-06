@@ -27,6 +27,7 @@ pub fn run() {
     let shared: &'static Shared = Box::leak(Box::new(Shared::new(store.get(&SOUNDS_ON))));
     let (producer, consumer) = ring::ring(RING_CAPACITY);
     let kick = audio::spawn(shared, consumer, audio::HOLD_WINDOW);
+    audio::observe_sleep_wake();
 
     match packs::load_static(packs::DEFAULT_PACK) {
         Ok(pack) => {
