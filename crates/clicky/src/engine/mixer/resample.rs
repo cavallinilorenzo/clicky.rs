@@ -12,7 +12,7 @@
 //! a 23.5 kHz tone fold back into a 44.1 kHz output at −4.8 dB, and left a
 //! −62 dB residual on a 1 kHz sine. A windowed sinc is the standard remedy.
 //! Its cost is a 72-tap dot product per voice and frame (152 taps for 96 → 44.1
-//! kHz), vectorised.
+//! kHz), vectorised (in NEON on Apple silicon, see `dot2`).
 //!
 //! Measured by the tests in `mixer.rs` (sines at 0.5 of full scale, 44.1 ↔ 48 kHz
 //! and 44.1/48 → 96 kHz, bounds in brackets): the passband from 100 Hz to 18 kHz
@@ -139,10 +139,59 @@ impl Kernel {
 const MAX_TAPS: usize = 160;
 
 /// Two dot products of `samples` with the rows `a` and `b`, eight lanes at a
-/// time (so the compiler vectorises it). All three have the same length, a
-/// multiple of [`LANES`].
+/// time. All three have the same length, a multiple of [`LANES`].
+///
+/// On Apple silicon, written out in NEON: the compiler's own vectorisation of
+/// [`dot2_reference`] pairs the two rows lane by lane and loads each sample
+/// on its own, about four times the instructions, and this loop is most of
+/// the render callback's time. Each lane adds the same products in the same
+/// order as the reference, without fused multiply-adds, so the result is
+/// bit-identical on both architectures.
+#[cfg(target_arch = "aarch64")]
 #[inline]
 fn dot2(a: &[f32], b: &[f32], samples: &[i16]) -> (f32, f32) {
+    use std::arch::aarch64::{
+        vaddq_f32, vcvtq_f32_s32, vdupq_n_f32, vget_low_s16, vld1q_f32, vld1q_s16, vmovl_high_s16,
+        vmovl_s16, vmulq_f32, vst1q_f32,
+    };
+    let n = samples.len().min(a.len()).min(b.len()) / LANES * LANES;
+    let mut x = [0.0f32; LANES];
+    let mut y = [0.0f32; LANES];
+    // SAFETY: NEON is part of the aarch64 baseline. Every load reads LANES
+    // elements starting at `i`, and `i + LANES <= n`, which is within all
+    // three slices; the stores write the two arrays of LANES floats.
+    unsafe {
+        let (mut x0, mut x1) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
+        let (mut y0, mut y1) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
+        let mut i = 0;
+        while i < n {
+            let s = vld1q_s16(samples.as_ptr().add(i));
+            let lo = vcvtq_f32_s32(vmovl_s16(vget_low_s16(s)));
+            let hi = vcvtq_f32_s32(vmovl_high_s16(s));
+            x0 = vaddq_f32(x0, vmulq_f32(vld1q_f32(a.as_ptr().add(i)), lo));
+            x1 = vaddq_f32(x1, vmulq_f32(vld1q_f32(a.as_ptr().add(i + 4)), hi));
+            y0 = vaddq_f32(y0, vmulq_f32(vld1q_f32(b.as_ptr().add(i)), lo));
+            y1 = vaddq_f32(y1, vmulq_f32(vld1q_f32(b.as_ptr().add(i + 4)), hi));
+            i += LANES;
+        }
+        vst1q_f32(x.as_mut_ptr(), x0);
+        vst1q_f32(x.as_mut_ptr().add(4), x1);
+        vst1q_f32(y.as_mut_ptr(), y0);
+        vst1q_f32(y.as_mut_ptr().add(4), y1);
+    }
+    (x.iter().sum(), y.iter().sum())
+}
+
+#[cfg(not(target_arch = "aarch64"))]
+#[inline]
+fn dot2(a: &[f32], b: &[f32], samples: &[i16]) -> (f32, f32) {
+    dot2_reference(a, b, samples)
+}
+
+/// [`dot2`] as plain Rust, eight lanes at a time.
+#[cfg_attr(target_arch = "aarch64", cfg(test))]
+#[inline]
+fn dot2_reference(a: &[f32], b: &[f32], samples: &[i16]) -> (f32, f32) {
     let mut x = [0.0f32; LANES];
     let mut y = [0.0f32; LANES];
     let (a, b, samples) =
@@ -222,4 +271,44 @@ fn bessel_i0(x: f64) -> f64 {
         }
     }
     sum
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Samples and coefficients of every magnitude, from a fixed seed.
+    fn data(len: usize, seed: u64) -> (Vec<f32>, Vec<f32>, Vec<i16>) {
+        let mut state = seed;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut coefficient = || (next() % 2_000_001) as f32 / 1e6 - 1.0;
+        let a: Vec<f32> = (0..len).map(|_| coefficient()).collect();
+        let b: Vec<f32> = (0..len).map(|_| coefficient()).collect();
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let s = (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as i16
+            })
+            .collect();
+        (a, b, s)
+    }
+
+    #[test]
+    fn the_vectorised_dot_products_match_the_reference_bit_for_bit() {
+        for (taps, seed) in [(8, 1), (72, 2), (152, 3), (MAX_TAPS, 4), (72, 5)] {
+            let (a, b, s) = data(taps, seed);
+            let (x, y) = dot2(&a, &b, &s);
+            let (rx, ry) = dot2_reference(&a, &b, &s);
+            assert_eq!((x.to_bits(), y.to_bits()), (rx.to_bits(), ry.to_bits()), "{taps} taps");
+            assert!(x != 0.0 && y != 0.0, "the data exercises the products");
+        }
+    }
 }
