@@ -121,7 +121,7 @@ impl MenuBuilder {
         let hooks = self.on_open;
         let delegate = MenuDelegate::new(self.ui.mtm, move || hooks.iter().for_each(|f| f()));
         self.menu.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        Menu { menu: self.menu, _targets: self.targets, delegate: delegate }
+        Menu { menu: self.menu, _targets: self.targets, delegate }
     }
 }
 
