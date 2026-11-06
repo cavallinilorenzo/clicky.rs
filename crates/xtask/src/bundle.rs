@@ -7,8 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::cmd::{output, run as run_cmd};
 use crate::packs::{self, EXTENSION};
-use crate::sign::{self, output, run as run_cmd};
+use crate::sign;
 
 pub const APP_NAME: &str = "Clicky";
 pub const BUNDLE_ID: &str = "io.github.cavallinilorenzo.clicky";
@@ -88,12 +89,39 @@ pub fn run(root: &Path, args: &[String]) -> crate::Result<PathBuf> {
     Ok(app)
 }
 
-/// Quits a running Clicky, then opens `app` with LaunchServices.
+/// Quits a running Clicky (by bundle id, so no other process named Clicky is
+/// touched), then opens `app` with LaunchServices.
 pub fn launch(app: &Path) -> crate::Result<()> {
-    // Ignore the status: there is usually no Clicky running.
-    let _ = Command::new("pkill").args(["-x", APP_NAME]).status();
+    // `is running` never launches the app, so "not running" is no error.
+    let script = format!(
+        "if application id \"{BUNDLE_ID}\" is running then \
+         tell application id \"{BUNDLE_ID}\" to quit"
+    );
+    if let Err(e) = run_cmd(Command::new("osascript").args(["-e", &script])) {
+        eprintln!("warning: could not quit the running {APP_NAME} ({e})");
+    }
     std::thread::sleep(std::time::Duration::from_millis(300));
     run_cmd(Command::new("open").arg(app))
+}
+
+/// Fails, naming the command to run, unless every target in `needed` is in
+/// `installed` (the output of `rustup target list --installed`). The build
+/// never installs toolchain components by itself.
+fn check_targets(installed: &str, needed: &[&str]) -> crate::Result<()> {
+    let missing: Vec<&str> = needed
+        .iter()
+        .copied()
+        .filter(|target| !installed.lines().any(|line| line.trim() == *target))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "the universal build needs the Rust target(s) {}. Install them with \
+         `rustup target add {}`, or build for this Mac only with --native",
+        missing.join(", "),
+        missing.join(" ")
+    ))
 }
 
 /// Builds `clicky` in release mode for each target and returns the binaries.
@@ -102,11 +130,7 @@ fn compile(root: &Path, universal: bool) -> crate::Result<Vec<PathBuf>> {
     let targets: Vec<&str> = if universal { TARGETS.to_vec() } else { vec![host] };
     if universal {
         let installed = output(Command::new("rustup").args(["target", "list", "--installed"]))?;
-        for target in &targets {
-            if !installed.lines().any(|line| line.trim() == *target) {
-                run_cmd(Command::new("rustup").args(["target", "add", target]))?;
-            }
-        }
+        check_targets(&installed, &targets)?;
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut binaries = Vec::new();
@@ -190,6 +214,16 @@ mod tests {
         ] {
             assert!(plist.contains(needle), "missing {needle}");
         }
+    }
+
+    #[test]
+    fn a_missing_target_names_the_command_that_adds_it() {
+        let installed = "aarch64-apple-darwin\nwasm32-unknown-unknown\n";
+        assert_eq!(check_targets(installed, &["aarch64-apple-darwin"]), Ok(()));
+        let error = check_targets(installed, &TARGETS).unwrap_err();
+        assert!(error.contains("rustup target add x86_64-apple-darwin"), "{error}");
+        assert!(!error.contains("add aarch64"), "{error}");
+        assert!(error.contains("--native"), "offers the host-only build: {error}");
     }
 
     #[test]

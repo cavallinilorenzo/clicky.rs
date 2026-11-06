@@ -3,6 +3,7 @@
 mod audit;
 mod bundle;
 mod catalog;
+mod cmd;
 mod decode;
 mod dsp;
 mod loudness;
