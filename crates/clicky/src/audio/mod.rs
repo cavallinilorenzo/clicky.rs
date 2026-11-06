@@ -2,26 +2,41 @@
 //! against the CoreAudio [`output`] adapter.
 //!
 //! The control thread sleeps while cold (no wakeups, no CPU) and is woken by
-//! the first key press. While warm it wakes only at the hold-window deadline.
+//! the first key press, a device change ([`hal`] listeners) or sleep/wake
+//! ([`power`]), all through [`signals`]. While warm it wakes only at the
+//! hold-window deadline and at each watchdog check.
 
+mod device;
 mod ffi;
+mod hal;
 pub mod lifecycle;
 mod output;
+mod power;
+mod signals;
 
-use std::sync::atomic::{Ordering, fence};
+use std::sync::atomic::{AtomicU64, Ordering, fence};
 use std::time::{Duration, Instant};
 
 use crate::diagnostics::{self, Event};
 use crate::engine::mixer::Play;
 use crate::engine::ring::Consumer;
 use crate::engine::{Kick, Shared};
+pub use hal::allow_system_sleep;
 pub use lifecycle::HOLD_WINDOW;
-use lifecycle::{Command, Lifecycle};
+use lifecycle::{Command, Lifecycle, State, WATCHDOG_INTERVAL};
 use output::Output;
-pub use output::allow_system_sleep;
+pub use power::observe_sleep_wake;
 
 /// How long a start waits for its first render cycle before logging without it.
 const FIRST_RENDER_WAIT: Duration = Duration::from_secs(2);
+
+/// How long to let a burst of device notifications settle before acting on a
+/// warm output: connecting headphones often changes the default device, then
+/// its rate. Well within the 1 s in which the sound must follow the device.
+const SETTLE: Duration = Duration::from_millis(100);
+
+/// Completed rebuilds, for the self-test.
+static REBUILDS: AtomicU64 = AtomicU64::new(0);
 
 /// Starts the audio control thread with the given hold window (normally
 /// [`HOLD_WINDOW`]); key presses wake it through the returned [`Kick`].
@@ -30,7 +45,18 @@ pub fn spawn(shared: &'static Shared, input: Consumer<Play>, hold: Duration) -> 
         .name("clicky-audio".into())
         .spawn(move || Control::new(shared, input, hold).run())
         .expect("failed to spawn the audio control thread");
+    signals::attach(handle.thread().clone());
     Kick::new(handle.thread().clone())
+}
+
+/// Asks the control thread to rebuild a warm output (the self-test).
+pub fn request_rebuild() {
+    signals::raise(signals::REQUEST);
+}
+
+/// How many rebuilds have completed.
+pub fn rebuilds() -> u64 {
+    REBUILDS.load(Ordering::SeqCst)
 }
 
 struct Control {
@@ -38,6 +64,9 @@ struct Control {
     output: Option<Output>,
     lifecycle: Lifecycle,
     seen_key: Option<Instant>,
+    /// When the running output started, for the stop log. Kept here because
+    /// the lifecycle forgets it as soon as it decides to go cold.
+    running_since: Option<Instant>,
 }
 
 impl Control {
@@ -47,23 +76,34 @@ impl Control {
                 diagnostics::log(Event::Error { context: "audio unit", detail: e.to_string() })
             })
             .ok();
-        Control { shared, output, lifecycle: Lifecycle::new(hold), seen_key: None }
+        Control {
+            shared,
+            output,
+            lifecycle: Lifecycle::new(hold, WATCHDOG_INTERVAL),
+            seen_key: None,
+            running_since: None,
+        }
     }
 
     fn run(mut self) -> ! {
         loop {
+            let mut acted = false;
             if let Some(at) = self.shared.last_key_press()
                 && self.seen_key != Some(at)
             {
                 self.seen_key = Some(at);
                 let command = self.lifecycle.key_pressed(at);
-                self.execute(command);
+                acted |= self.execute(command);
             }
-            let warm_since = self.lifecycle.warm_since();
-            let command = self.lifecycle.tick(Instant::now());
-            if let Command::Stop(reason) = command {
-                self.stop(reason.as_str(), warm_since);
-                // A key press may have raced the stop: look again before sleeping.
+            let bits = signals::take();
+            if bits != 0 {
+                acted |= self.handle_signals(bits);
+            }
+            let renders = self.renders();
+            let command = self.lifecycle.tick(Instant::now(), renders);
+            acted |= self.execute(command);
+            if acted {
+                // A key press or a signal may have raced the command: look again.
                 continue;
             }
             match self.lifecycle.deadline() {
@@ -75,18 +115,66 @@ impl Control {
         }
     }
 
-    fn execute(&mut self, command: Command) {
-        match command {
-            Command::None => {}
-            Command::Start => self.start(),
-            Command::Stop(reason) => {
-                let warm_since = self.lifecycle.warm_since();
-                self.stop(reason.as_str(), warm_since);
-            }
-        }
+    fn renders(&self) -> u64 {
+        self.output.as_ref().map_or(0, Output::renders)
     }
 
-    fn start(&mut self) {
+    /// Acts on signalled sleep, wake and device changes. Returns whether a
+    /// command ran.
+    fn handle_signals(&mut self, mut bits: u32) -> bool {
+        if bits & signals::DEVICE_BITS != 0 && self.lifecycle.state() != State::Cold {
+            std::thread::sleep(SETTLE);
+            bits |= signals::take();
+        }
+        let mut acted = false;
+        if bits & signals::SLEEP != 0 {
+            self.log_trigger("system will sleep");
+            let command = self.lifecycle.will_sleep();
+            acted |= self.execute(command);
+        }
+        if bits & signals::WAKE != 0 {
+            self.log_trigger("system did wake");
+            let command = self.lifecycle.did_wake(Instant::now());
+            acted |= self.execute(command);
+        }
+        let trigger = self.output.as_ref().and_then(|o| o.confirm(bits & signals::DEVICE_BITS));
+        if let Some(trigger) = trigger {
+            self.log_trigger(trigger.as_str());
+            let command = self.lifecycle.trigger(trigger, Instant::now());
+            acted |= self.execute(command);
+        }
+        acted
+    }
+
+    fn log_trigger(&self, trigger: &'static str) {
+        diagnostics::log(Event::AudioTrigger { trigger, state: self.lifecycle.state().as_str() });
+    }
+
+    /// Runs `command` and whatever the lifecycle asks next. Returns whether
+    /// anything ran.
+    fn execute(&mut self, command: Command) -> bool {
+        let acted = command != Command::None;
+        let mut command = command;
+        loop {
+            command = match command {
+                Command::None => break,
+                Command::Start(cause) => self.start(cause.as_str(), false),
+                Command::Rebuild(trigger) => {
+                    self.stop_output(trigger.as_str());
+                    self.start(trigger.as_str(), true)
+                }
+                Command::Stop(reason) => {
+                    self.stop_output(reason.as_str());
+                    Command::None
+                }
+            };
+        }
+        self.sync_warm();
+        acted
+    }
+
+    /// Starts the output; returns the lifecycle's follow-up.
+    fn start(&mut self, cause: &'static str, rebuild: bool) -> Command {
         let requested = Instant::now();
         self.shared.clear_first_render();
         let result = match self.output.as_mut() {
@@ -94,38 +182,61 @@ impl Control {
             None => Err("no output unit".to_owned()),
         };
         match result {
-            Ok(sample_rate) => {
+            Ok(started) => {
                 let start_ms = ms(requested.elapsed());
                 self.shared.warm.store(true, Ordering::SeqCst);
-                self.lifecycle.started(Instant::now());
+                self.running_since = Some(Instant::now());
+                let follow_up = self.lifecycle.started(Instant::now(), self.renders());
                 let first_render = self.wait_for_first_render(requested + FIRST_RENDER_WAIT);
+                if rebuild {
+                    REBUILDS.fetch_add(1, Ordering::SeqCst);
+                }
+                diagnostics::log(Event::AudioStartedOn {
+                    cause,
+                    rebuild,
+                    device: started.device,
+                    transport: started.transport.as_str(),
+                    buffer_frames: started.buffer_frames,
+                    pre_roll_ms: ms(started.pre_roll),
+                });
                 diagnostics::log(Event::AudioStarted {
-                    sample_rate,
+                    sample_rate: started.sample_rate,
                     start_ms,
                     first_render_ms: first_render
                         .map(|t| ms(t.saturating_duration_since(requested))),
                 });
+                follow_up
             }
             Err(detail) => {
-                self.lifecycle.start_failed();
-                diagnostics::log(Event::Error { context: "audio start", detail });
+                let context = if rebuild { "audio rebuild" } else { "audio start" };
+                diagnostics::log(Event::Error { context, detail });
+                self.lifecycle.start_failed()
             }
         }
     }
 
-    fn stop(&mut self, reason: &'static str, warm_since: Option<Instant>) {
+    /// Fades out and stops the output, logging why.
+    fn stop_output(&mut self, reason: &'static str) {
+        let warm_since = self.running_since.take();
         if let Some(output) = self.output.as_mut() {
             output.stop();
         }
-        self.shared.warm.store(false, Ordering::SeqCst);
-        // Pairs with the fence in `Kick::kick`: either the listener sees the output
-        // cold and wakes us, or we see its key press on the next loop.
-        fence(Ordering::SeqCst);
         diagnostics::log(Event::AudioStopped {
             reason,
             warm_secs: warm_since.map_or(0.0, |t| t.elapsed().as_secs_f64()),
             dropped: self.shared.dropped.load(Ordering::Relaxed),
         });
+    }
+
+    /// Mirrors the lifecycle into `Shared::warm`, which tells key presses
+    /// whether they must wake this thread.
+    fn sync_warm(&self) {
+        if self.lifecycle.state() == State::Cold && self.shared.warm.load(Ordering::SeqCst) {
+            self.shared.warm.store(false, Ordering::SeqCst);
+            // Pairs with the fence in `Kick::kick`: either the listener sees the output
+            // cold and wakes us, or we see its key press on the next loop.
+            fence(Ordering::SeqCst);
+        }
     }
 
     fn wait_for_first_render(&self, deadline: Instant) -> Option<Instant> {

@@ -30,6 +30,7 @@ pub fn run() {
     let (producer, consumer) = ring::ring(RING_CAPACITY);
     let (consumer, preview_producer) = consumer.with_producer(PREVIEW_CAPACITY);
     let kick = audio::spawn(shared, consumer, audio::HOLD_WINDOW);
+    audio::observe_sleep_wake();
 
     let library = packs::library();
     let (chosen, problems) = library.load_saved(&store.get(&packs::SELECTED_PACK));
