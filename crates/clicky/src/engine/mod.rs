@@ -64,8 +64,6 @@ pub struct Shared {
     pack: AtomicPtr<Pack>,
     /// Key Release Sounds (has no effect for a pack without release sounds).
     release_sounds: AtomicBool,
-    /// Natural Variation.
-    variation: AtomicBool,
     /// Spatial Stereo.
     spatial: AtomicBool,
 }
@@ -82,7 +80,6 @@ impl Shared {
             epoch: Instant::now(),
             pack: AtomicPtr::new(std::ptr::null_mut()),
             release_sounds: AtomicBool::new(options::RELEASE_SOUNDS.default),
-            variation: AtomicBool::new(options::NATURAL_VARIATION.default),
             spatial: AtomicBool::new(options::SPATIAL_STEREO.default),
         }
     }
@@ -93,14 +90,6 @@ impl Shared {
 
     pub fn set_release_sounds(&self, on: bool) {
         self.release_sounds.store(on, Ordering::Relaxed);
-    }
-
-    pub fn variation(&self) -> bool {
-        self.variation.load(Ordering::Relaxed)
-    }
-
-    pub fn set_variation(&self, on: bool) {
-        self.variation.store(on, Ordering::Relaxed);
     }
 
     pub fn spatial(&self) -> bool {
@@ -278,11 +267,7 @@ impl Voicer {
 
     fn play(&mut self, pack: &'static Pack, clip: u16, keycode: u16) {
         let Some(samples) = pack.clip(clip) else { return };
-        let (gain, pitch) = if self.shared.variation() {
-            options::variation(self.rng.unit(), self.rng.unit())
-        } else {
-            (1.0, 1.0)
-        };
+        let (gain, pitch) = options::variation(self.rng.unit(), self.rng.unit());
         let pan = if self.shared.spatial() { options::key_pan(keycode) } else { 0.0 };
         let play = Play { samples, src_rate: pack.sample_rate, gain, pan, pitch };
         if !self.producer.push(play) {
@@ -340,11 +325,10 @@ mod tests {
     /// A voicer with every option set as given and a roomy ring.
     fn voicer_with(
         pack: &'static Pack,
-        (release, variation, spatial): (bool, bool, bool),
+        (release, spatial): (bool, bool),
     ) -> (Voicer, ring::Consumer<Play>, &'static Shared) {
         let shared: &'static Shared = Box::leak(Box::new(Shared::new(true)));
         shared.set_release_sounds(release);
-        shared.set_variation(variation);
         shared.set_spatial(spatial);
         let (producer, consumer) = ring::ring(1_024);
         (Voicer::new(pack, producer, shared, Kick::none()), consumer, shared)
@@ -364,22 +348,8 @@ mod tests {
     }
 
     #[test]
-    fn with_natural_variation_off_a_repeated_key_is_identical() {
-        let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, false, true));
-        for _ in 0..50 {
-            voicer.press(u16::from(code::A));
-        }
-        let plays = drain(&mut ring);
-        assert_eq!(plays.len(), 50);
-        assert!(plays.iter().all(|p| p.gain == 1.0 && p.pitch == 1.0), "{:?}", plays[0]);
-        assert!(plays.iter().all(|p| *p == plays[0]));
-        let first = rendered(&plays[0]);
-        assert!(plays.iter().all(|p| rendered(p) == first), "bit-identical sound");
-    }
-
-    #[test]
-    fn with_natural_variation_on_each_keystroke_varies_within_its_bounds() {
-        let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, true, false));
+    fn each_keystroke_varies_within_its_bounds() {
+        let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, false));
         for _ in 0..500 {
             voicer.press(u16::from(code::A));
         }
@@ -402,7 +372,7 @@ mod tests {
 
     #[test]
     fn with_spatial_stereo_on_keys_are_panned_by_their_position() {
-        let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, false, true));
+        let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, true));
         voicer.press(u16::from(code::SHIFT));
         voicer.press(u16::from(code::SPACE));
         voicer.press(u16::from(code::RETURN));
@@ -417,7 +387,7 @@ mod tests {
 
     #[test]
     fn with_spatial_stereo_off_every_key_is_centred() {
-        let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, false, false));
+        let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, false));
         voicer.press(u16::from(code::SHIFT));
         voicer.press(u16::from(code::RETURN));
         voicer.release(u16::from(code::SHIFT));
@@ -431,7 +401,7 @@ mod tests {
     #[test]
     fn a_release_sounds_only_when_enabled_and_the_pack_has_one_for_the_key() {
         let a = u16::from(code::A);
-        let (mut voicer, mut ring, shared) = voicer_with(releasing_pack(), (true, false, false));
+        let (mut voicer, mut ring, shared) = voicer_with(releasing_pack(), (true, false));
         voicer.release(a);
         let plays = drain(&mut ring);
         assert_eq!(plays.len(), 1);
@@ -447,7 +417,7 @@ mod tests {
         assert!(ring.pop().is_none(), "sounds off");
 
         // A pack recorded without release sounds stays silent on key-up.
-        let (mut voicer, mut ring, _) = voicer_with(pack(), (true, false, false));
+        let (mut voicer, mut ring, _) = voicer_with(pack(), (true, false));
         voicer.release(a);
         voicer.release(u16::from(code::SPACE));
         assert!(ring.pop().is_none());
@@ -455,7 +425,7 @@ mod tests {
 
     #[test]
     fn a_release_wakes_the_output_like_a_press() {
-        let (mut voicer, _ring, shared) = voicer_with(releasing_pack(), (true, false, false));
+        let (mut voicer, _ring, shared) = voicer_with(releasing_pack(), (true, false));
         voicer.release(u16::from(code::A));
         assert!(shared.last_key_press().is_some());
     }
@@ -475,7 +445,7 @@ mod tests {
             ),
         ];
         for (down, up, key) in held {
-            let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, true, true));
+            let (mut voicer, mut ring, _) = voicer_with(releasing_pack(), (true, true));
             let mut keys = KeyState::default();
             let t0 = Instant::now();
             let mut at = |ms: u64, event| {

@@ -3,6 +3,7 @@
 //! the sections in menu order.
 
 mod about;
+mod brand;
 mod diagnostics;
 mod launch_at_login;
 mod options;
@@ -10,6 +11,7 @@ mod permission;
 mod quit;
 mod sound_switch;
 mod soundpack;
+mod switch;
 mod volume;
 
 use std::rc::Rc;
@@ -19,7 +21,7 @@ use objc2::runtime::{AnyClass, AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{ClassType, MainThreadMarker};
 use objc2_app_kit::{
     NSControlStateValue, NSControlStateValueOff, NSControlStateValueOn, NSMenu, NSMenuItem,
-    NSSlider, NSSwitch,
+    NSSlider,
 };
 use objc2_foundation::NSString;
 
@@ -47,12 +49,12 @@ impl Menu {
 pub fn build(ui: &Rc<Ui>) -> Menu {
     let mut menu = MenuBuilder::new(ui);
     // The permission rows (only while sounds are unavailable) lead the menu,
-    // so nothing comes between the nine sections of issue #2.
+    // so nothing comes between the sections of issue #2.
     permission::add(&mut menu); // #9
     sound_switch::add(&mut menu);
     soundpack::add(&mut menu); // #7: soundpack picker
     volume::add(&mut menu); // #6: volume slider
-    options::add(&mut menu); // #8: Key Release Sounds, Natural Variation, Spatial Stereo
+    options::add(&mut menu); // #8: Key Release Sounds, Spatial Stereo
     launch_at_login::add(&mut menu); // #9: Launch at Login
     about::add(&mut menu); // #7: About
     diagnostics::add(&mut menu); // About's alternate (Option held): right after About
@@ -143,7 +145,7 @@ pub fn describe(menu: &NSMenu) -> Vec<String> {
         .map(|item| {
             let text = if item.isSeparatorItem() {
                 "---".to_owned()
-            } else if holds(&item, NSSwitch::class()) {
+            } else if holds(&item, switch::Switch::class()) {
                 "<switch>".to_owned()
             } else if holds(&item, NSSlider::class()) {
                 "<slider>".to_owned()

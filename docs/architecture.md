@@ -28,7 +28,7 @@ input (CGEventTap, listen-only)            │
   is a physical press (one per press, never auto-repeat) or release;
   `Voicer::key` picks the clip (a press through `keys::press_clip`; a release
   only from the key's own release recording, when Key Release Sounds is on),
-  draws Natural Variation's gain and pitch (xorshift, no allocation), takes the
+  draws Natural Variation's gain and pitch (always on; xorshift, no allocation), takes the
   key's pan for Spatial Stereo (`engine::options`), and pushes a `Play` into
   the lock-free ring. It never blocks: a full ring drops the press and counts it.
   The same thread supervises the Input Monitoring permission
@@ -53,7 +53,7 @@ input (CGEventTap, listen-only)            │
 - The **main thread** runs the menu. The on/off switch writes `Shared` and the
   settings; turning sounds off makes the mixer ramp to silence within one block.
   The volume slider sets the master gain (`Shared::set_master_gain`) on every move
-  and saves `VOLUME`; `app.rs` applies the saved volume at launch. The three sound
+  and saves `VOLUME`; `app.rs` applies the saved volume at launch. The two sound
   options flip an atomic in `Shared` and save their setting; `app.rs` restores
   them at launch (`engine::options::restore`).
 - Soundpacks are built at build time (`cargo xtask packs`) from the committed
@@ -73,8 +73,8 @@ input (CGEventTap, listen-only)            │
 | `diagnostics.rs` | The optional log: the `Event` enum (no key data, by construction), line formatting, the file logger. `LOG_ENABLED` setting. | yes |
 | `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition` (both played by `Voicer::key`), `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input noted by the tap callback, logged by the tap thread once per kind). | yes |
 | `packs.rs` | The `Library` of bundled soundpacks (descriptions read at launch, audio on first use, never freed), grouped by `SwitchType`; `load_saved` (saved id → default → first that loads); `DEFAULT_PACK`, `SELECTED_PACK` setting. | yes |
-| `engine/mod.rs` | `Shared` atomics (including the current soundpack, an `AtomicPtr` swapped by the picker, and the three sound options), `Kick`, `Voicer` (`key`, `press`, `release`; applies the options); `SOUNDS_ON` setting, `MASTER_GAIN` (the volume slider's maximum). | yes |
-| `engine/options.rs` | The sound options: `RELEASE_SOUNDS`, `NATURAL_VARIATION`, `SPATIAL_STEREO` settings (all on by default), `restore`, `variation` (±1.5 dB, ±35 cents), `key_pan` (key x position, at most ±0.4), the tap thread's xorshift64* `Rng`. | yes |
+| `engine/mod.rs` | `Shared` atomics (including the current soundpack, an `AtomicPtr` swapped by the picker, and the two sound options), `Kick`, `Voicer` (`key`, `press`, `release`; applies the options); `SOUNDS_ON` setting, `MASTER_GAIN` (the volume slider's maximum). | yes |
+| `engine/options.rs` | The sound options: `RELEASE_SOUNDS`, `SPATIAL_STEREO` settings (both on by default); Natural Variation is not an option, it is always on, `restore`, `variation` (±1.5 dB, ±35 cents), `key_pan` (key x position, at most ±0.4), the tap thread's xorshift64* `Rng`. | yes |
 | `engine/preview.rs` | The pick preview: its own thread, `Voicer` and ring press a short "rust ⏎" from the current soundpack; picking again restarts it. | yes |
 | `engine/ring.rs` | Wait-free SPSC ring; `Consumer::with_producer` chains a second ring (the preview's) into the same consumer. | yes |
 | `engine/mixer.rs` | Voice pool (32 voices + 16 slots for stolen voices fading out over 5 ms), stereo mix: per-voice pitch (0.9–1.05) and equal-power pan (`pan_gains`, centre = unity, bit-identical channels), `set_mono` (every voice centred), master-gain ramp (≤ full scale per 20 ms, one-pole smoothed, per frame), headroom, `VOLUME` setting and `volume_gain` (dB curve). | yes |
@@ -99,8 +99,9 @@ input (CGEventTap, listen-only)            │
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
 | `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). Needs permission wins over off: the icon flags what must be fixed, and the menu still shows the switch's state. | yes (state) |
 | `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order; `describe` prints the built menu for `--menu`. | yes (`tests/menu_order.rs` runs `--menu`) |
+| `ui/menu/brand.rs`, `switch.rs` | The custom rows' shared look: the brand blue (a dynamic colour: Navy on light, Sky on dark), insets that line the rows up with the system's, autoresizing masks (the rows follow the menu's width), the keycap mark. `Switch`: the on/off pill drawn in the brand blue (`NSSwitch` takes the system accent and turns grey in a menu). | |
 | `ui/menu/sound_switch.rs`, `soundpack.rs`, `volume.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. `diagnostics.rs`: "Diagnostics Log", About's alternate item (shown in its place while Option is held, even with the menu open). | partly (`choose`, `credits_text`) |
-| `ui/menu/options.rs` | Key Release Sounds, Natural Variation, Spatial Stereo checkboxes after the volume slider; Key Release Sounds greyed out with "This soundpack has no release sounds" (subtitle on macOS 14.4+, note row before; tooltip) for packs without them (`Entry::has_release`), refreshed on each menu open. | yes (`view`, `SoundOption::set`) |
+| `ui/menu/options.rs` | Key Release Sounds and Spatial Stereo checkboxes after the volume slider; Key Release Sounds greyed out with "This soundpack has no release sounds" (subtitle on macOS 14.4+, note row before; tooltip) for packs without them (`Entry::has_release`), refreshed on each menu open. | yes (`view`, `SoundOption::set`) |
 | `ui/menu/launch_at_login.rs` | "Launch at Login" over `SMAppService.mainAppService`, behind the `LoginItem` seam; reads the real state on each menu open. | yes (toggle, view) |
 | `ui/menu/permission.rs` | The rows shown at the top of the menu, above the switch, while sounds are unavailable for lack of permission, with the fix. | yes (rows; `tests/menu_order.rs` via `--menu --needs-permission`) |
 

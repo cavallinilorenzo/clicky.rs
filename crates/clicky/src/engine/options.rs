@@ -1,10 +1,11 @@
-//! The sound options (Key Release Sounds, Natural Variation, Spatial Stereo):
-//! their settings, and the laws the [`Voicer`](super::Voicer) applies.
+//! The sound options (Key Release Sounds, Spatial Stereo) and Natural
+//! Variation, which is not an option: it is always on. The settings, and the
+//! laws the [`Voicer`](super::Voicer) applies.
 //!
-//! - **Natural Variation**: each keystroke's loudness varies within
+//! - **Natural Variation** (always on): each keystroke's loudness varies within
 //!   ±[`GAIN_JITTER_DB`] and its pitch (the resampler's rate) within
-//!   ±[`PITCH_JITTER_CENTS`], uniformly. Off: gain and pitch are exactly 1,
-//!   so a repeated key is bit-identical.
+//!   ±[`PITCH_JITTER_CENTS`], uniformly. A saved `NaturalVariation` setting
+//!   from an older version is ignored.
 //! - **Spatial Stereo**: a key's pan follows its horizontal position on the
 //!   keyboard ([`key_pan`]), at most ±[`PAN_WIDTH`] (27° either side of the
 //!   centre, +2 dB on the near side). Off: centred.
@@ -20,14 +21,12 @@ use crate::settings::{Setting, Store};
 
 /// Play the soundpack's release sound when a key comes up (if it has them).
 pub const RELEASE_SOUNDS: Setting<bool> = Setting { key: "KeyReleaseSounds", default: true };
-/// Vary each keystroke's pitch and loudness slightly.
-pub const NATURAL_VARIATION: Setting<bool> = Setting { key: "NaturalVariation", default: true };
 /// Pan each key's sound by where it sits on the keyboard.
 pub const SPATIAL_STEREO: Setting<bool> = Setting { key: "SpatialStereo", default: true };
 
-/// Loudness variation with Natural Variation on: ± this many dB.
+/// Loudness variation with Natural Variation: ± this many dB.
 pub const GAIN_JITTER_DB: f32 = 1.5;
-/// Pitch variation with Natural Variation on: ± this many cents (±2.0 %).
+/// Pitch variation with Natural Variation: ± this many cents (±2.0 %).
 pub const PITCH_JITTER_CENTS: f32 = 35.0;
 /// Largest pan with Spatial Stereo on (1 would be hard left or right).
 pub const PAN_WIDTH: f32 = 0.4;
@@ -40,7 +39,6 @@ const HALF_WIDTH: f32 = 7.75;
 /// Sets the engine's options from the saved settings (at launch, before any key press).
 pub fn restore(shared: &Shared, store: &Store) {
     shared.set_release_sounds(store.get(&RELEASE_SOUNDS));
-    shared.set_variation(store.get(&NATURAL_VARIATION));
     shared.set_spatial(store.get(&SPATIAL_STEREO));
 }
 
@@ -52,7 +50,7 @@ pub fn key_pan(keycode: u16) -> f32 {
     ((key.x - CENTRE_X) / HALF_WIDTH).clamp(-1.0, 1.0) * PAN_WIDTH
 }
 
-/// A keystroke's (gain, pitch) with Natural Variation on, from two uniform
+/// A keystroke's (gain, pitch) with Natural Variation, from two uniform
 /// draws in [0, 1): 0 is the low end of each range, 1 the high end.
 pub fn variation(gain_unit: f32, pitch_unit: f32) -> (f32, f32) {
     let spread = |unit: f32| unit.clamp(0.0, 1.0) * 2.0 - 1.0;
@@ -154,15 +152,12 @@ mod tests {
         let first = suite.store();
         let shared = Shared::new(true);
         restore(&shared, &first);
-        assert!(shared.release_sounds() && shared.variation() && shared.spatial(), "all on");
+        assert!(shared.release_sounds() && shared.spatial(), "all on");
         first.set(&RELEASE_SOUNDS, &false);
         first.set(&SPATIAL_STEREO, &false);
         let relaunched = suite.store();
         let shared = Shared::new(true);
         restore(&shared, &relaunched);
-        assert_eq!(
-            (shared.release_sounds(), shared.variation(), shared.spatial()),
-            (false, true, false)
-        );
+        assert_eq!((shared.release_sounds(), shared.spatial()), (false, false));
     }
 }

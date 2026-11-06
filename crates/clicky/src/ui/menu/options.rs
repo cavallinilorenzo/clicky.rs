@@ -1,5 +1,6 @@
-//! The sound options, right after the volume slider: Key Release Sounds,
-//! Natural Variation and Spatial Stereo, each a checkbox item. A click flips
+//! The sound options, right after the volume slider: Key Release Sounds and
+//! Spatial Stereo, each a checkbox item. (Natural Variation has no item: it is
+//! always on.) A click flips
 //! the option in the engine at once (the next key uses it) and saves it.
 //!
 //! Key Release Sounds is greyed out for a soundpack recorded without release
@@ -18,29 +19,26 @@ use objc2_foundation::NSString;
 
 use super::{MenuBuilder, control_state};
 use crate::engine::Shared;
-use crate::engine::options::{NATURAL_VARIATION, RELEASE_SOUNDS, SPATIAL_STEREO};
+use crate::engine::options::{RELEASE_SOUNDS, SPATIAL_STEREO};
 use crate::packs::{self, Entry};
 use crate::settings::{Setting, Store};
 
 /// Why Key Release Sounds is unavailable.
 pub const NO_RELEASE_SOUNDS: &str = "This soundpack has no release sounds";
 
-/// One of the three options.
+/// One of the two options.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoundOption {
     ReleaseSounds,
-    NaturalVariation,
     SpatialStereo,
 }
 
 impl SoundOption {
-    pub const ALL: [SoundOption; 3] =
-        [SoundOption::ReleaseSounds, SoundOption::NaturalVariation, SoundOption::SpatialStereo];
+    pub const ALL: [SoundOption; 2] = [SoundOption::ReleaseSounds, SoundOption::SpatialStereo];
 
     pub fn title(self) -> &'static str {
         match self {
             SoundOption::ReleaseSounds => "Key Release Sounds",
-            SoundOption::NaturalVariation => "Natural Variation",
             SoundOption::SpatialStereo => "Spatial Stereo",
         }
     }
@@ -48,9 +46,6 @@ impl SoundOption {
     fn tooltip(self) -> &'static str {
         match self {
             SoundOption::ReleaseSounds => "Play a key's release sound when it comes back up",
-            SoundOption::NaturalVariation => {
-                "Vary the pitch and loudness of each keystroke slightly"
-            }
             SoundOption::SpatialStereo => {
                 "Place each key's sound left or right by where it sits on the keyboard (best on headphones)"
             }
@@ -60,7 +55,6 @@ impl SoundOption {
     fn setting(self) -> &'static Setting<bool> {
         match self {
             SoundOption::ReleaseSounds => &RELEASE_SOUNDS,
-            SoundOption::NaturalVariation => &NATURAL_VARIATION,
             SoundOption::SpatialStereo => &SPATIAL_STEREO,
         }
     }
@@ -69,7 +63,6 @@ impl SoundOption {
     pub fn is_on(self, shared: &Shared) -> bool {
         match self {
             SoundOption::ReleaseSounds => shared.release_sounds(),
-            SoundOption::NaturalVariation => shared.variation(),
             SoundOption::SpatialStereo => shared.spatial(),
         }
     }
@@ -78,7 +71,6 @@ impl SoundOption {
     pub fn set(self, on: bool, shared: &Shared, store: &Store) {
         match self {
             SoundOption::ReleaseSounds => shared.set_release_sounds(on),
-            SoundOption::NaturalVariation => shared.set_variation(on),
             SoundOption::SpatialStereo => shared.set_spatial(on),
         }
         store.set(self.setting(), &on);
@@ -196,9 +188,8 @@ mod tests {
             release,
             View { checked: false, enabled: false, reason: Some(NO_RELEASE_SOUNDS) }
         );
-        let variation = view(SoundOption::NaturalVariation, &shared, false);
-        assert!(variation.enabled && variation.checked, "the others stay available");
-        assert!(view(SoundOption::SpatialStereo, &shared, false).enabled);
+        let spatial = view(SoundOption::SpatialStereo, &shared, false);
+        assert!(spatial.enabled && spatial.checked, "the other stays available");
     }
 
     #[test]
@@ -233,6 +224,6 @@ mod tests {
         SoundOption::SpatialStereo.set(true, &shared, &store);
         let relaunched = Shared::new(true);
         options::restore(&relaunched, &store);
-        assert!(relaunched.spatial() && !relaunched.variation() && !relaunched.release_sounds());
+        assert!(relaunched.spatial() && !relaunched.release_sounds());
     }
 }

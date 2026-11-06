@@ -133,7 +133,7 @@ mod tests {
         assert!(!sounds_on, "on/off");
         assert_eq!(pack, "holy-panda");
         assert_eq!(gain, volume_gain(0.3), "volume");
-        assert_eq!(options, [false; 3], "Key Release Sounds, Natural Variation, Spatial Stereo");
+        assert_eq!(options, [false; 2], "Key Release Sounds, Spatial Stereo");
         assert!(log, "diagnostics log");
     }
 
