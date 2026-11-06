@@ -5,7 +5,7 @@
 //!
 //! Privacy by construction: only the [`Event`] variants below can be logged,
 //! and none of them carries a keycode or a character. Never add one that does.
-//! New areas (device changes in #4) add variants here, at the end.
+//! New areas (device changes in #4, permission in #9) add variants here.
 //!
 //! Never call [`log`] from the render callback: it takes a lock and writes a file.
 
