@@ -1,0 +1,73 @@
+[package]
+name = "clicky"
+description = "Mechanical keyboard sounds on every key press: a native macOS menu bar app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+block2 = "0.6.2"
+clicky-pack = { path = "../clicky-pack" }
+libc = "0.2"
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-foundation",
+    "NSApplication",
+    "NSAttributedString",
+    "NSBezierPath",
+    "NSButton",
+    "NSCell",
+    "NSColor",
+    "NSControl",
+    "NSEvent",
+    "NSFont",
+    "NSGraphics",
+    "NSImage",
+    "NSImageView",
+    "NSLayoutAnchor",
+    "NSLayoutConstraint",
+    "NSMenu",
+    "NSMenuItem",
+    "NSParagraphStyle",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSSlider",
+    "NSStackView",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSSwitch",
+    "NSText",
+    "NSTextField",
+    "NSUserInterfaceLayout",
+    "NSView",
+    "NSWindow",
+    "NSWorkspace",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-core-foundation",
+    "NSArray",
+    "NSAttributedString",
+    "NSBundle",
+    "NSDictionary",
+    "NSError",
+    "NSGeometry",
+    "NSNotification",
+    "NSObject",
+    "NSOperation",
+    "NSString",
+    "NSURL",
+    "NSUserDefaults",
+    "NSValue",
+] }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true

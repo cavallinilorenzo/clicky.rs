@@ -1,0 +1,25 @@
+{
+  "packs": [
+    { "id": "cherry-mx-black-abs", "name": "Cherry MX Black", "variant": "ABS", "switch_type": "linear", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-black-abs" } },
+    { "id": "cherry-mx-black-pbt", "name": "Cherry MX Black", "variant": "PBT", "switch_type": "linear", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-black-pbt" } },
+    { "id": "cherry-mx-red-abs", "name": "Cherry MX Red", "variant": "ABS", "switch_type": "linear", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-red-abs" } },
+    { "id": "cherry-mx-red-pbt", "name": "Cherry MX Red", "variant": "PBT", "switch_type": "linear", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-red-pbt" } },
+    { "id": "gateron-black-ink", "name": "Gateron Black Ink", "switch_type": "linear", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/blackink" } },
+    { "id": "gateron-red-ink", "name": "Gateron Red Ink", "switch_type": "linear", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/redink" } },
+    { "id": "novelkeys-cream", "name": "NovelKeys Cream", "switch_type": "linear", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/cream" } },
+    { "id": "alpaca", "name": "Alpaca", "switch_type": "linear", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/alpaca" } },
+    { "id": "turquoise-tealios", "name": "Turquoise Tealios", "switch_type": "linear", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/turquoise" } },
+    { "id": "cherry-mx-brown-abs", "name": "Cherry MX Brown", "variant": "ABS", "switch_type": "tactile", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-brown-abs" } },
+    { "id": "cherry-mx-brown-pbt", "name": "Cherry MX Brown", "variant": "PBT", "switch_type": "tactile", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-brown-pbt" } },
+    { "id": "holy-panda", "name": "Holy Panda", "switch_type": "tactile", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/holypanda" } },
+    { "id": "topre", "name": "Topre", "switch_type": "tactile", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/topre" } },
+    { "id": "topre-purple-hybrid-pbt", "name": "Topre Purple Hybrid", "variant": "PBT", "switch_type": "tactile", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/topre-purple-hybrid-pbt" } },
+    { "id": "everglide-crystal-purple", "name": "Everglide Crystal Purple", "switch_type": "tactile", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/eg-crystal-purple" } },
+    { "id": "everglide-oreo", "name": "Everglide Oreo", "switch_type": "tactile", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/eg-oreo" } },
+    { "id": "cherry-mx-blue-abs", "name": "Cherry MX Blue", "variant": "ABS", "switch_type": "clicky", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-blue-abs" } },
+    { "id": "cherry-mx-blue-pbt", "name": "Cherry MX Blue", "variant": "PBT", "switch_type": "clicky", "credit": "Mechvibes by Hai Nguyen · MIT License", "source": { "kind": "mechvibes", "dir": "mechvibes/cherrymx-blue-pbt" } },
+    { "id": "kailh-box-navy", "name": "Kailh Box Navy", "switch_type": "clicky", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/boxnavy" } },
+    { "id": "skcm-blue-alps", "name": "SKCM Blue Alps", "switch_type": "clicky", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/bluealps" } },
+    { "id": "buckling-spring", "name": "Buckling Spring", "switch_type": "clicky", "credit": "kbsim by Thomas Lai · MIT License", "source": { "kind": "kbsim", "dir": "kbsim/buckling" } }
+  ]
+}
