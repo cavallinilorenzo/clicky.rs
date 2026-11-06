@@ -25,6 +25,8 @@ use objc2_foundation::NSString;
 
 use super::Ui;
 use super::target::{ActionTarget, MenuDelegate};
+#[cfg(test)]
+pub use options::SoundOption;
 
 /// The built menu and everything AppKit holds only weakly.
 pub struct Menu {
