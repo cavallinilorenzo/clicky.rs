@@ -12,6 +12,7 @@
 //! A [`Transition::Release`] plays the key's own release sound, if Key Release
 //! Sounds is on and the soundpack has one (`engine::Voicer::release`).
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use clicky_pack::Pack;
@@ -212,37 +213,56 @@ impl KeyState {
 /// Decides which unrecognised input is worth one log line: the first of each
 /// kind per process, described without its keycode. Unrecognised keys still
 /// sound (through [`press_clip`]'s fallback); this only keeps the log quiet.
+///
+/// Split in two so that the tap callback never logs: the callback calls
+/// [`note`](LogOnce::note) (an atomic bit: no lock, no allocation), and the
+/// tap thread, between run-loop passes, logs what
+/// [`take_new`](LogOnce::take_new) hands it.
 #[derive(Debug, Default)]
 pub struct LogOnce {
-    /// One bit per kind already logged.
-    logged: u8,
+    /// One bit per kind seen (set by the tap callback).
+    seen: AtomicU8,
+    /// One bit per kind already handed out for logging.
+    handed_out: AtomicU8,
 }
 
+/// The kinds of unrecognised input, one bit each.
+const UNRECOGNISED: [(u8, &str); 3] = [
+    (1, "a key outside the key table"),
+    (2, "a modifier change from a key that is not a modifier"),
+    (4, "a media key with no known position"),
+];
+
 impl LogOnce {
-    /// A description of `event`'s kind if it is unrecognised and the first of
-    /// its kind; `None` otherwise. Never contains a keycode.
-    pub fn first(&mut self, event: &KeyEvent) -> Option<&'static str> {
-        let (bit, kind) = match *event {
-            KeyEvent::Down { keycode, .. } | KeyEvent::Up { keycode } if !known(keycode) => {
-                (1, "a key outside the key table")
-            }
+    /// Remembers `event`'s kind if it is unrecognised. Real-time safe: for
+    /// the tap callback.
+    pub fn note(&self, event: &KeyEvent) {
+        let bit = match *event {
+            KeyEvent::Down { keycode, .. } | KeyEvent::Up { keycode } if !known(keycode) => 1,
             KeyEvent::FlagsChanged { keycode, .. }
                 if matches!(modifier(keycode), Modifier::Unknown) =>
             {
-                (2, "a modifier change from a key that is not a modifier")
+                2
             }
             KeyEvent::Media { key, .. }
                 if keys::media_keycode(key).is_some_and(|k| k >= keys::MEDIA_OTHER_BASE) =>
             {
-                (4, "a media key with no known position")
+                4
             }
-            _ => return None,
+            _ => return,
         };
-        if self.logged & bit != 0 {
-            return None;
+        if self.seen.load(Ordering::Relaxed) & bit == 0 {
+            self.seen.fetch_or(bit, Ordering::Relaxed);
         }
-        self.logged |= bit;
-        Some(kind)
+    }
+
+    /// A description of each kind noted since the last call and never handed
+    /// out before, so each kind at most once per process. Never contains a
+    /// keycode. Not for the tap callback: its caller logs.
+    pub fn take_new(&self) -> impl Iterator<Item = &'static str> {
+        let new = self.seen.load(Ordering::Relaxed) & !self.handed_out.load(Ordering::Relaxed);
+        self.handed_out.fetch_or(new, Ordering::Relaxed);
+        UNRECOGNISED.into_iter().filter(move |(bit, _)| new & bit != 0).map(|(_, kind)| kind)
     }
 }
 
@@ -543,25 +563,35 @@ mod tests {
 
     #[test]
     fn unrecognised_input_is_reported_once_per_kind_without_its_keycode() {
-        let mut once = LogOnce::default();
+        let once = LogOnce::default();
         let down = |keycode| KeyEvent::Down { keycode, autorepeat: false };
-        assert_eq!(once.first(&down(u16::from(code::A))), None, "a known key");
-        assert_eq!(once.first(&KeyEvent::Up { keycode: 0x7E }), None);
         let flags = |keycode| KeyEvent::FlagsChanged { keycode, flags: 0 };
-        assert_eq!(once.first(&flags(u16::from(code::RIGHT_OPTION))), None);
         let media = |key| KeyEvent::Media { key, down: true, autorepeat: false };
-        assert_eq!(once.first(&media(0)), None, "volume up");
+        let known = [
+            down(u16::from(code::A)),
+            KeyEvent::Up { keycode: 0x7E },
+            flags(u16::from(code::RIGHT_OPTION)),
+            media(0), // volume up
+        ];
+        known.iter().for_each(|event| once.note(event));
+        assert_eq!(once.take_new().count(), 0, "known keys are not reported");
 
-        let kinds: Vec<&str> = [down(0x34), down(145), flags(0x00), media(15), media(99)]
-            .iter()
-            .cycle()
-            .take(5_000)
-            .filter_map(|event| once.first(event))
-            .collect();
+        let unknown = [down(0x34), down(145), flags(0x00), media(15), media(99)];
+        let mut kinds: Vec<&str> = Vec::new();
+        for (i, event) in unknown.iter().cycle().take(5_000).enumerate() {
+            once.note(event);
+            if i % 7 == 0 {
+                // The tap thread drains between run-loop passes, at any point.
+                kinds.extend(once.take_new());
+            }
+        }
+        kinds.extend(once.take_new());
         assert_eq!(kinds.len(), 3, "one line per kind, however often: {kinds:?}");
         for kind in kinds {
             assert!(!kind.chars().any(|c| c.is_ascii_digit()), "no keycode in {kind:?}");
         }
+        unknown.iter().for_each(|event| once.note(event));
+        assert_eq!(once.take_new().count(), 0, "never again in this process");
     }
 
     #[test]

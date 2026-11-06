@@ -71,7 +71,7 @@ input (CGEventTap, listen-only)            │
 | `app.rs` | Launch wiring: settings (`restored`: on/off, volume, sound options), sleep policy, soundpack, audio, input, UI. | yes (`restored`, across a real relaunch) |
 | `settings.rs` | Typed `Setting<T>` + `Store` over `NSUserDefaults` (in-memory backend for tests). Each feature declares its own `Setting` const next to its code. | yes |
 | `diagnostics.rs` | The optional log: the `Event` enum (no key data, by construction), line formatting, the file logger. `LOG_ENABLED` setting. | yes |
-| `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition` (both played by `Voicer::key`), `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input logged once per kind). | yes |
+| `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition` (both played by `Voicer::key`), `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input noted by the tap callback, logged by the tap thread once per kind). | yes |
 | `packs.rs` | The `Library` of bundled soundpacks (descriptions read at launch, audio on first use, never freed), grouped by `SwitchType`; `load_saved` (saved id → default → first that loads); `DEFAULT_PACK`, `SELECTED_PACK` setting. | yes |
 | `engine/mod.rs` | `Shared` atomics (including the current soundpack, an `AtomicPtr` swapped by the picker, and the three sound options), `Kick`, `Voicer` (`key`, `press`, `release`; applies the options); `SOUNDS_ON` setting, `MASTER_GAIN` (the volume slider's maximum). | yes |
 | `engine/options.rs` | The sound options: `RELEASE_SOUNDS`, `NATURAL_VARIATION`, `SPATIAL_STEREO` settings (all on by default), `restore`, `variation` (±1.5 dB, ±35 cents), `key_pan` (key x position, at most ±0.4), the tap thread's xorshift64* `Rng`. | yes |
@@ -149,6 +149,14 @@ Never rename a shipped settings key (`SoundsOn`, `DiagnosticsLog`).
   call `CGEventKeyboardGetUnicodeString` or anything that yields characters, and never
   log a keycode. `diagnostics::Event` has no variant that can carry one
   (`UnrecognisedInput` carries only a fixed description of the kind).
+- The tap callback (`input/mod.rs::tap_callback`) and everything it calls
+  (`KeyState`, `Voicer`, `Producer::push`, `Shared` atomics) must not lock, allocate
+  or log, for any event. A re-enabled tap and unrecognised input (`LogOnce::note`)
+  only set atomic bits; the tap thread logs them after each run-loop pass
+  (`drain_log`, up to 3 s later), unrecognised input at most once per kind per
+  process. Exceptions: `media::read` (above), and one system call: a press while the
+  output is cold or still starting unparks the audio control thread (`Kick::kick`,
+  `Thread::unpark`). While the output is warm a press makes no system call.
 
 ## Sound quality (`engine/mixer`)
 

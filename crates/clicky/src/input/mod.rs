@@ -20,6 +20,7 @@ mod media;
 pub mod permission;
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::diagnostics::{self, Event};
@@ -31,10 +32,17 @@ const WAITING_CHECK: Duration = Duration::from_secs(1);
 /// How often to check the permission and the tap while listening.
 const LISTENING_CHECK: Duration = Duration::from_secs(3);
 
+/// `TapState::reenabled` bits: why macOS disabled the tap since the last drain.
+const REENABLED_TIMEOUT: u8 = 1;
+const REENABLED_USER_INPUT: u8 = 2;
+
 struct TapState {
     voicer: Voicer,
     keys: KeyState,
+    /// Noted by the callback, logged by [`drain_log`].
     unrecognised: LogOnce,
+    /// Set by the callback when it re-enabled the tap, logged by [`drain_log`].
+    reenabled: AtomicU8,
     tap: ffi::CFMachPortRef,
 }
 
@@ -57,6 +65,7 @@ fn run(voicer: Voicer) {
         voicer,
         keys: KeyState::default(),
         unrecognised: LogOnce::default(),
+        reenabled: AtomicU8::new(0),
         tap: std::ptr::null_mut(),
     }));
     let mut supervisor = permission::Supervisor::default();
@@ -97,6 +106,25 @@ fn run(voicer: Voicer) {
             },
             None => std::thread::sleep(WAITING_CHECK),
         }
+        // SAFETY: the run loop returned, so the callback is not running; the
+        // state is never freed.
+        drain_log(unsafe { &*state });
+    }
+}
+
+/// Logs what the tap callback noted since the last pass, so the callback
+/// itself never takes the logger's lock, formats or writes. Lines arrive up
+/// to one run-loop pass ([`LISTENING_CHECK`]) late.
+fn drain_log(state: &TapState) {
+    let reenabled = state.reenabled.swap(0, Ordering::Relaxed);
+    for (bit, cause) in [(REENABLED_TIMEOUT, "timeout"), (REENABLED_USER_INPUT, "user input")] {
+        if reenabled & bit != 0 {
+            diagnostics::log(Event::InputTapReenabled { cause });
+        }
+    }
+    for kind in state.unrecognised.take_new() {
+        // At most once per kind per process; the kind never names the key.
+        diagnostics::log(Event::UnrecognisedInput { kind });
     }
 }
 
@@ -177,8 +205,10 @@ impl Drop for Tap {
     }
 }
 
-/// Event-tap callback. Ordinary key events take no locks and allocate nothing;
-/// see `media` for system-defined events.
+/// Event-tap callback. It takes no locks, allocates nothing and never logs:
+/// a re-enabled tap and unrecognised input only set atomic bits, which the
+/// tap thread logs after the run loop returns ([`drain_log`]). The one
+/// exception is `media::read`, for system-defined events only (see `media`).
 ///
 /// PRIVACY (for review): from each event this reads only its type, the
 /// keycode, the auto-repeat flag and the modifier flags, and for media keys
@@ -202,9 +232,12 @@ unsafe extern "C" fn tap_callback(
             unsafe { ffi::CGEventTapEnable(state.tap, true) };
             // Key-ups may have been missed while the tap was off.
             state.keys.reset();
-            let cause =
-                if kind == ffi::kCGEventTapDisabledByTimeout { "timeout" } else { "user input" };
-            diagnostics::log(Event::InputTapReenabled { cause });
+            let bit = if kind == ffi::kCGEventTapDisabledByTimeout {
+                REENABLED_TIMEOUT
+            } else {
+                REENABLED_USER_INPUT
+            };
+            state.reenabled.fetch_or(bit, Ordering::Relaxed);
             None
         }
         ffi::kCGEventKeyDown => Some(KeyEvent::Down {
@@ -221,10 +254,7 @@ unsafe extern "C" fn tap_callback(
         _ => None,
     };
     let Some(key_event) = key_event else { return event };
-    if let Some(kind) = state.unrecognised.first(&key_event) {
-        // At most once per kind per launch; the kind never names the key.
-        diagnostics::log(Event::UnrecognisedInput { kind });
-    }
+    state.unrecognised.note(&key_event);
     if let Some(transition) = state.keys.handle(key_event, Instant::now()) {
         state.voicer.key(transition);
     }
