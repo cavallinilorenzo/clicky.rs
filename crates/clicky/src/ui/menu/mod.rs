@@ -3,6 +3,8 @@
 //! the sections in menu order.
 
 mod diagnostics;
+mod launch_at_login;
+mod permission;
 mod quit;
 mod sound_switch;
 
@@ -35,6 +37,8 @@ pub fn build(ui: &Rc<Ui>) -> Menu {
     // #6: volume slider
     // #8: Key Release Sounds, Natural Variation, Spatial Stereo
     // #9: Launch at Login (and the permission row)
+    launch_at_login::add(&mut menu);
+    permission::add(&mut menu);
     // #7: About
     diagnostics::add(&mut menu);
     quit::add(&mut menu);

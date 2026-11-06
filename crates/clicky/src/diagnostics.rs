@@ -5,7 +5,7 @@
 //!
 //! Privacy by construction: only the [`Event`] variants below can be logged,
 //! and none of them carries a keycode or a character. Never add one that does.
-//! New areas (device changes in #4, permission in #9) add variants here.
+//! New areas (device changes in #4) add variants here, at the end.
 //!
 //! Never call [`log`] from the render callback: it takes a lock and writes a file.
 
@@ -71,6 +71,16 @@ pub enum Event {
     UnrecognisedInput {
         kind: &'static str,
     },
+    /// Input Monitoring was turned off while Clicky was listening.
+    InputPermissionRevoked,
+    /// Input Monitoring was granted, but the tap needs a relaunch.
+    InputNeedsRelaunch,
+    /// Clicky is relaunching itself (from the first-run window or the menu).
+    Relaunching,
+    /// Launch at Login after a change or a menu check. `status` is a fixed description.
+    LaunchAtLogin {
+        status: &'static str,
+    },
 }
 
 impl fmt::Display for Event {
@@ -106,6 +116,14 @@ impl fmt::Display for Event {
             Event::UnrecognisedInput { kind } => {
                 write!(f, "input: saw {kind}; it plays a fallback sound (logged once per launch)")
             }
+            Event::InputPermissionRevoked => {
+                write!(f, "input: Input Monitoring permission revoked; tap removed, retrying")
+            }
+            Event::InputNeedsRelaunch => {
+                write!(f, "input: Input Monitoring granted; the tap needs a relaunch")
+            }
+            Event::Relaunching => write!(f, "app: relaunching"),
+            Event::LaunchAtLogin { status } => write!(f, "login item: {status}"),
         }
     }
 }
@@ -292,6 +310,20 @@ mod tests {
             "input: saw a media key with no known position; it plays a fallback sound \
              (logged once per launch)"
         );
+    }
+
+    #[test]
+    fn permission_and_login_events_read_plainly() {
+        assert_eq!(
+            Event::InputPermissionRevoked.to_string(),
+            "input: Input Monitoring permission revoked; tap removed, retrying"
+        );
+        assert_eq!(
+            Event::InputNeedsRelaunch.to_string(),
+            "input: Input Monitoring granted; the tap needs a relaunch"
+        );
+        assert_eq!(Event::Relaunching.to_string(), "app: relaunching");
+        assert_eq!(Event::LaunchAtLogin { status: "enabled" }.to_string(), "login item: enabled");
     }
 
     #[test]
