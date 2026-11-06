@@ -5,7 +5,7 @@ Clicky is a Cargo workspace of three crates:
 | Crate | Role |
 |---|---|
 | `crates/clicky` | The menu bar app (binary `clicky`, bundled as `Clicky.app`). |
-| `crates/clicky-pack` | The `.clickypack` soundpack format, macOS key geometry (`keys`) and the Mechvibes key-code table. Shared by the app (reader) and the build tool (writer). |
+| `crates/clicky-pack` | The `.clickypack` soundpack format, macOS key geometry, key classes, fallbacks and media-key positions (`keys`) and the Mechvibes key-code table. Shared by the app (reader) and the build tool (writer). |
 | `crates/xtask` | Build tooling, run as `cargo xtask`: the soundpack pipeline, the universal app bundle and signing. |
 
 ## Data flow
@@ -23,8 +23,10 @@ input (CGEventTap, listen-only)            │
                                                           audio::output (AUHAL) ─────┘
 ```
 
-- The **tap thread** sees only the event type and keycode. `KeyState` decides
-  whether a press sound plays; `Voicer` picks the clip and pushes a `Play` into
+- The **tap thread** sees only the event type, keycode, auto-repeat flag and
+  modifier flags (and a media key's type). `KeyState` decides whether an event
+  is a physical press (one per press, never auto-repeat) or release;
+  `Voicer` picks the clip through `keys::press_clip` and pushes a `Play` into
   the lock-free ring. It never blocks: a full ring drops the press and counts it.
 - The **render callback** drains the ring into the `Mixer` and renders. No locks,
   no allocation, no logging. It records the first render after each start.
@@ -44,7 +46,7 @@ input (CGEventTap, listen-only)            │
 | `app.rs` | Launch wiring: settings, sleep policy, soundpack, audio, input, UI. | |
 | `settings.rs` | Typed `Setting<T>` + `Store` over `NSUserDefaults` (in-memory backend for tests). Each feature declares its own `Setting` const next to its code. | yes |
 | `diagnostics.rs` | The optional log: the `Event` enum (no key data, by construction), line formatting, the file logger. `LOG_ENABLED` setting. | yes |
-| `keys.rs` | `KeyEvent`, `KeyState` (which events play), `press_clip` (keycode → clip with fallback). | yes |
+| `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition`, `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input logged once per kind). | yes |
 | `packs.rs` | Finding and loading `.clickypack` files; `DEFAULT_PACK`. | yes |
 | `engine/mod.rs` | `Shared` atomics, `Kick`, `Voicer`; `SOUNDS_ON` setting, `MASTER_GAIN`. | yes |
 | `engine/ring.rs` | Wait-free SPSC ring. | yes |
@@ -53,7 +55,8 @@ input (CGEventTap, listen-only)            │
 | `audio/mod.rs` | The control thread: drives the lifecycle against the output, logs start/stop. | |
 | `audio/output.rs` | CoreAudio adapter: AUHAL unit, render callback, `allow_system_sleep`. | |
 | `audio/ffi.rs`, `input/ffi.rs` | Hand-written FFI (AudioToolbox, CoreAudio, CoreGraphics, CoreFoundation). | layout tests |
-| `input/mod.rs` | The listen-only event tap thread and its minimal permission retry. | |
+| `input/mod.rs` | The listen-only event tap thread (key down/up, flags-changed, system-defined) and its minimal permission retry. | |
+| `input/media.rs` | Media keys: reads a system-defined event's subtype and `data1` through `NSEvent` (the tap thread's only Objective-C call). | yes (decode, real NSEvent round trip) |
 | `selftest.rs` | `--self-test`: exercises the audio path without the key listener. | |
 | `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`. | |
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
@@ -71,10 +74,10 @@ bundle layout), `sign.rs` (ADR 0002 signing).
 | Ticket | Own files (mostly new) | Shared lines it touches |
 |---|---|---|
 | #4 Output lifecycle | `audio/lifecycle.rs` (new events/states: device change, sample rate, sleep/wake, watchdog, pre-roll), `audio/output.rs` (listeners, rebuild, built-in buffer size), `audio/mod.rs`, new `audio/devices.rs` etc., `audio/ffi.rs` | new `Event` variants in `diagnostics.rs` |
-| #5 Key mapping | `keys.rs` (`KeyState` press/release/modifier tracking, fallback classes), `input/mod.rs` (`CGEventGetFlags`, system-defined media keys), `input/ffi.rs` | `Voicer::press` signature in `engine/mod.rs` if release sounds need a second entry point |
+| #5 Key mapping (done) | `keys.rs`, `input/mod.rs`, `input/media.rs`, `input/ffi.rs`, `clicky-pack/src/keys.rs` (`KeyClass`, `class`, `fallbacks`, `media_keycode`) | `Event::UnrecognisedInput` in `diagnostics.rs`; `Voicer::press` unchanged |
 | #6 Mixer, limiter, volume | `engine/mixer.rs` (+ an offline stress-render test), new `ui/menu/volume.rs` | one line in `ui/menu/mod.rs::build`; `VOLUME` setting next to the mixer; `Shared::set_master_gain` already exists |
 | #7 21 packs, picker, About | `assets/soundpacks/**`, `crates/xtask/src/sources/kbsim.rs`, `catalog.rs`, `packs.rs` (app: library of all packs, `SELECTED_PACK` setting), new `ui/menu/soundpack.rs`, `ui/menu/about.rs`, `THIRD_PARTY_NOTICES.md` | two lines in `ui/menu/mod.rs::build`; `Voicer` needs a switchable pack (e.g. an atomic pointer) in `engine/mod.rs`; the `SourceKind` enum |
-| #8 Sound options | `keys.rs`/`engine` voicer options, new `ui/menu/options.rs` | one line in `ui/menu/mod.rs::build`; `Play` gains per-voice pan/pitch |
+| #8 Sound options | `keys.rs`/`engine` voicer options, new `ui/menu/options.rs`; release sounds hang off `Transition::Release` in `input/mod.rs` | one line in `ui/menu/mod.rs::build`; `Play` gains per-voice pan/pitch |
 | #9 First run, permission, Launch at Login | new `ui/onboarding.rs`, `ui/menu/launch_at_login.rs`, `ui/menu/permission.rs`, `input/permission.rs` | one line each in `ui/menu/mod.rs::build`; a `NeedsPermission` state in `ui/status_item.rs`; `input::start`'s retry loop |
 
 ### Hot spots
@@ -98,6 +101,9 @@ Never rename a shipped settings key (`SoundsOn`, `DiagnosticsLog`).
 - The render callback (`audio/output.rs::render`) and everything it calls
   (`Mixer`, `Consumer::pop`, `Shared` atomics) must not lock, allocate, log or call
   Objective-C.
-- The tap callback reads only the event type, the keycode and the auto-repeat flag.
-  Never call `CGEventKeyboardGetUnicodeString` or anything that yields characters,
-  and never log a keycode. `diagnostics::Event` has no variant that can carry one.
+- The tap callback reads only the event type, the keycode, the auto-repeat flag and
+  the modifier flags; for media keys, the key type in `data1` (`input/media.rs`, the
+  only Objective-C call on the tap thread, and only for system-defined events). Never
+  call `CGEventKeyboardGetUnicodeString` or anything that yields characters, and never
+  log a keycode. `diagnostics::Event` has no variant that can carry one
+  (`UnrecognisedInput` carries only a fixed description of the kind).

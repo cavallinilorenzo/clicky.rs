@@ -66,6 +66,11 @@ pub enum Event {
         context: &'static str,
         detail: String,
     },
+    /// Input of a kind Clicky does not recognise (logged once per kind per
+    /// launch). `kind` is a fixed description from `keys::LogOnce`: never a keycode.
+    UnrecognisedInput {
+        kind: &'static str,
+    },
 }
 
 impl fmt::Display for Event {
@@ -98,6 +103,9 @@ impl fmt::Display for Event {
             }
             Event::InputTapReenabled { cause } => write!(f, "input: tap re-enabled ({cause})"),
             Event::Error { context, detail } => write!(f, "error: {context}: {detail}"),
+            Event::UnrecognisedInput { kind } => {
+                write!(f, "input: saw {kind}; it plays a fallback sound (logged once per launch)")
+            }
         }
     }
 }
@@ -274,6 +282,16 @@ mod tests {
         assert_eq!(event.to_string(), "audio: stopped (hold window elapsed) after 125.0 s warm");
         let lossy = Event::AudioStopped { reason: "x", warm_secs: 1.0, dropped: 3 };
         assert!(lossy.to_string().contains("3 key presses dropped"));
+    }
+
+    #[test]
+    fn unrecognised_input_names_its_kind_only() {
+        let event = Event::UnrecognisedInput { kind: "a media key with no known position" };
+        assert_eq!(
+            event.to_string(),
+            "input: saw a media key with no known position; it plays a fallback sound \
+             (logged once per launch)"
+        );
     }
 
     #[test]

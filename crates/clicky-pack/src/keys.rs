@@ -42,6 +42,19 @@ pub mod code {
     pub const RIGHT_CONTROL: u8 = 0x3E;
     pub const FUNCTION: u8 = 0x3F;
     pub const KEYPAD_ENTER: u8 = 0x4C;
+    pub const ONE: u8 = 0x12;
+    pub const SEVEN: u8 = 0x1A;
+    pub const FORWARD_DELETE: u8 = 0x75;
+    pub const F1: u8 = 0x7A;
+    pub const F10: u8 = 0x6D;
+    pub const F11: u8 = 0x67;
+    pub const F12: u8 = 0x6F;
+    pub const VOLUME_UP: u8 = 0x48;
+    pub const VOLUME_DOWN: u8 = 0x49;
+    pub const MUTE: u8 = 0x4A;
+    pub const HOME: u8 = 0x73;
+    pub const LEFT_ARROW: u8 = 0x7B;
+    pub const UP_ARROW: u8 = 0x7E;
 }
 
 const fn k(code: u8, name: &'static str, row: u8, x: f32) -> KeyInfo {
@@ -182,6 +195,167 @@ pub const KEYS: &[KeyInfo] = &[
 pub fn info(code: u8) -> Option<&'static KeyInfo> {
     KEYS.iter().find(|key| key.code == code)
 }
+
+/// What kind of key a keycode is. When a soundpack has no recording of a key,
+/// the key borrows the recording of another key of its class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyClass {
+    /// Letters, punctuation, Tab and every keycode Clicky does not know.
+    Letter,
+    /// The number row, including ` § - = and ¥.
+    NumberRow,
+    Space,
+    Return,
+    Delete,
+    /// Shift, Control, Option, Command (left and right), Fn, Caps Lock, the JIS
+    /// Eisu and Kana keys and Menu.
+    Modifier,
+    /// Escape, F1–F20, the volume keys, media keys and Apple's special
+    /// function-row keys reported above keycode 127.
+    Function,
+    Arrow,
+    /// Help, Home, End, Page Up, Page Down.
+    Navigation,
+    Keypad,
+}
+
+/// First synthetic keycode for media keys with no physical keycode of their
+/// own (see [`media_keycode`]). Real keycodes are 7-bit.
+pub const MEDIA_OTHER_BASE: u16 = 0x100;
+
+/// The class of any keycode. Total: unknown and out-of-range codes are
+/// [`KeyClass::Letter`], except 128..=511, which macOS uses for Apple's special
+/// function-row keys (brightness, Spotlight, Dictation…) and Clicky uses for
+/// media keys.
+pub fn class(code: u16) -> KeyClass {
+    use self::code as c;
+    let Ok(byte) = u8::try_from(code) else {
+        return if code < 0x200 { KeyClass::Function } else { KeyClass::Letter };
+    };
+    match byte {
+        c::SPACE => KeyClass::Space,
+        c::RETURN | c::KEYPAD_ENTER => KeyClass::Return,
+        c::DELETE | c::FORWARD_DELETE => KeyClass::Delete,
+        0x36..=0x3F | 0x66 | 0x68 | 0x6E => KeyClass::Modifier,
+        0x12..=0x1D | 0x0A | 0x32 | 0x5D => KeyClass::NumberRow,
+        0x7B..=0x7E => KeyClass::Arrow,
+        0x72..=0x74 | 0x77 | 0x79 => KeyClass::Navigation,
+        0x41 | 0x43 | 0x45 | 0x47 | 0x4B | 0x4E | 0x51..=0x59 | 0x5B | 0x5C | 0x5F => {
+            KeyClass::Keypad
+        }
+        c::ESCAPE
+        | 0x40
+        | 0x48..=0x4A
+        | 0x4F
+        | 0x50
+        | 0x5A
+        | 0x60..=0x65
+        | 0x67
+        | 0x69..=0x6B
+        | 0x6D
+        | 0x6F
+        | 0x71
+        | 0x76
+        | 0x78
+        | 0x7A
+        | 0x80..=0xFF => KeyClass::Function,
+        _ => KeyClass::Letter,
+    }
+}
+
+/// The keys whose recording stands in for `code` when a soundpack lacks it,
+/// most similar first: its twin (right Shift → Shift, Keypad 7 → 7, Keypad
+/// Enter → Return), then its class's stand-ins. Always ends with A, the
+/// letter class, so every key reaches a recording if the pack has any.
+pub fn fallbacks(code: u16) -> impl Iterator<Item = u8> {
+    twin(code).into_iter().chain(stand_ins(class(code)).iter().copied())
+}
+
+/// The single most similar key, if there is one.
+fn twin(code: u16) -> Option<u8> {
+    use self::code as c;
+    Some(match u8::try_from(code).ok()? {
+        c::SHIFT => c::RIGHT_SHIFT,
+        c::RIGHT_SHIFT => c::SHIFT,
+        c::COMMAND => c::RIGHT_COMMAND,
+        c::RIGHT_COMMAND => c::COMMAND,
+        c::OPTION => c::RIGHT_OPTION,
+        c::RIGHT_OPTION => c::OPTION,
+        c::CONTROL => c::RIGHT_CONTROL,
+        c::RIGHT_CONTROL => c::CONTROL,
+        c::FUNCTION => c::CONTROL,
+        0x66 => c::COMMAND,              // JIS Eisu, left of the space bar
+        0x68 | 0x6E => c::RIGHT_COMMAND, // JIS Kana, Menu
+        c::RETURN => c::KEYPAD_ENTER,
+        c::KEYPAD_ENTER => c::RETURN,
+        c::DELETE => c::FORWARD_DELETE,
+        c::FORWARD_DELETE => c::DELETE,
+        c::VOLUME_UP => c::F12,
+        c::VOLUME_DOWN => c::F11,
+        c::MUTE => c::F10,
+        0x47 => c::ESCAPE,   // Keypad Clear
+        0x52 => 0x1D,        // Keypad 0 → 0
+        0x53 => c::ONE,      // Keypad 1 → 1
+        0x54 => 0x13,        // Keypad 2 → 2
+        0x55 => 0x14,        // Keypad 3 → 3
+        0x56 => 0x15,        // Keypad 4 → 4
+        0x57 => 0x17,        // Keypad 5 → 5
+        0x58 => 0x16,        // Keypad 6 → 6
+        0x59 => c::SEVEN,    // Keypad 7 → 7
+        0x5B => 0x1C,        // Keypad 8 → 8
+        0x5C => 0x19,        // Keypad 9 → 9
+        0x41 => 0x2F,        // Keypad . → .
+        0x5F => 0x2B,        // JIS Keypad , → ,
+        0x4B => 0x2C,        // Keypad / → /
+        0x43 => 0x1C,        // Keypad * → 8 (where * is on the main block)
+        0x4E => 0x1B,        // Keypad - → -
+        0x45 | 0x51 => 0x18, // Keypad + and = → =
+        _ => return None,
+    })
+}
+
+fn stand_ins(class: KeyClass) -> &'static [u8] {
+    use self::code as c;
+    match class {
+        KeyClass::Letter | KeyClass::Space => &[c::A],
+        KeyClass::NumberRow | KeyClass::Keypad => &[c::ONE, c::A],
+        KeyClass::Return => &[c::RETURN, c::A],
+        KeyClass::Delete => &[c::DELETE, c::A],
+        KeyClass::Modifier => &[c::SHIFT, c::COMMAND, c::A],
+        KeyClass::Function => &[c::F1, c::F12, c::ESCAPE, c::A],
+        KeyClass::Arrow => &[c::UP_ARROW, c::LEFT_ARROW, c::A],
+        KeyClass::Navigation => &[c::HOME, c::UP_ARROW, c::A],
+    }
+}
+
+/// The keycode a media key (an `NX_KEYTYPE_*` value from a system-defined
+/// event) sounds as: the key it sits on on an Apple keyboard, so it gets that
+/// key's recording and position. Keys with no such position get a distinct
+/// synthetic code from [`MEDIA_OTHER_BASE`] (class [`KeyClass::Function`]).
+/// `None` for Caps Lock, which macOS reports as a modifier instead.
+pub fn media_keycode(nx_key_type: u16) -> Option<u16> {
+    let physical: u8 = match nx_key_type {
+        0 => code::VOLUME_UP,   // NX_KEYTYPE_SOUND_UP
+        1 => code::VOLUME_DOWN, // NX_KEYTYPE_SOUND_DOWN
+        2 => 0x78,              // NX_KEYTYPE_BRIGHTNESS_UP: F2
+        3 => code::F1,          // NX_KEYTYPE_BRIGHTNESS_DOWN: F1
+        4 => return None,       // NX_KEYTYPE_CAPS_LOCK
+        5 => 0x72,              // NX_KEYTYPE_HELP: Help
+        7 => code::MUTE,        // NX_KEYTYPE_MUTE
+        8 => code::UP_ARROW,    // NX_KEYTYPE_UP_ARROW_KEY
+        9 => 0x7D,              // NX_KEYTYPE_DOWN_ARROW_KEY
+        10 => 0x47,             // NX_KEYTYPE_NUM_LOCK: Keypad Clear
+        13 => 0x76,             // NX_KEYTYPE_LAUNCH_PANEL: F4
+        16 => 0x64,             // NX_KEYTYPE_PLAY: F8
+        17 | 19 => 0x65,        // NX_KEYTYPE_NEXT, _FAST: F9
+        18 | 20 => 0x62,        // NX_KEYTYPE_PREVIOUS, _REWIND: F7
+        21 => 0x61,             // NX_KEYTYPE_ILLUMINATION_UP: F6
+        22 | 23 => 0x60,        // NX_KEYTYPE_ILLUMINATION_DOWN, _TOGGLE: F5
+        other => return Some(MEDIA_OTHER_BASE + other.min(0xFF)),
+    };
+    Some(u16::from(physical))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +383,49 @@ mod tests {
         assert_eq!(info(code::SHIFT).unwrap().row, 4);
         assert_eq!(info(code::SPACE).unwrap().row, 5);
         assert!(info(0x34).is_none());
+    }
+
+    #[test]
+    fn keys_fall_back_to_their_twin_then_their_class() {
+        let first = |c: u16| fallbacks(c).next().unwrap();
+        assert_eq!(first(u16::from(code::KEYPAD_ENTER)), code::RETURN);
+        assert_eq!(first(0x59), 0x1A, "Keypad 7 uses the 7 of the number row");
+        assert_eq!(first(u16::from(code::RIGHT_SHIFT)), code::SHIFT);
+        assert_eq!(first(u16::from(code::RIGHT_COMMAND)), code::COMMAND);
+        assert_eq!(first(0x75), code::DELETE, "Forward Delete uses Delete");
+        assert_eq!(class(0x69), KeyClass::Function, "F13");
+        assert_eq!(class(0x50), KeyClass::Function, "F19");
+        assert_eq!(first(0x69), 0x7A, "F13 uses the F-row (F1)");
+        let option: Vec<u8> = fallbacks(u16::from(code::OPTION)).collect();
+        assert_eq!(option, [code::RIGHT_OPTION, code::SHIFT, code::COMMAND, code::A]);
+        let caps: Vec<u8> = fallbacks(u16::from(code::CAPS_LOCK)).collect();
+        assert_eq!(caps, [code::SHIFT, code::COMMAND, code::A]);
+        assert_eq!(fallbacks(0x34).collect::<Vec<_>>(), [code::A], "unknown: letter class");
+        assert_eq!(class(0x34), KeyClass::Letter);
+        assert_eq!(class(145), KeyClass::Function, "Apple's special F-row keys above 127");
+        assert_eq!(class(4_000), KeyClass::Letter);
+    }
+
+    #[test]
+    fn every_keycode_ends_its_fallbacks_at_the_letter_class() {
+        for c in 0..=u16::MAX {
+            assert_eq!(fallbacks(c).last(), Some(code::A), "keycode {c}");
+        }
+    }
+
+    #[test]
+    fn media_keys_sound_like_the_key_they_sit_on() {
+        assert_eq!(media_keycode(0), Some(0x48), "volume up");
+        assert_eq!(media_keycode(1), Some(0x49), "volume down");
+        assert_eq!(media_keycode(7), Some(0x4A), "mute");
+        assert_eq!(media_keycode(3), Some(0x7A), "brightness down: F1");
+        assert_eq!(media_keycode(16), Some(0x64), "play: F8");
+        assert_eq!(media_keycode(4), None, "Caps Lock is reported as a modifier");
+        let other = media_keycode(15).unwrap();
+        assert!(other > 127, "no physical keycode for video mirroring");
+        assert_eq!(class(other), KeyClass::Function);
+        assert_eq!(class(media_keycode(u16::MAX).unwrap()), KeyClass::Function);
+        assert_ne!(media_keycode(14), media_keycode(15), "distinct keys stay distinct");
     }
 
     #[test]
