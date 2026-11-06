@@ -150,22 +150,19 @@ mod tests {
 
     #[test]
     fn the_options_survive_a_relaunch() {
-        use crate::settings::UserDefaults;
-        let suite =
-            format!("io.github.cavallinilorenzo.clicky.tests.options.{}", std::process::id());
-        let first = Store::with_backend(UserDefaults::suite(&suite));
+        let suite = crate::settings::TestSuite::new("options");
+        let first = suite.store();
         let shared = Shared::new(true);
         restore(&shared, &first);
         assert!(shared.release_sounds() && shared.variation() && shared.spatial(), "all on");
         first.set(&RELEASE_SOUNDS, &false);
         first.set(&SPATIAL_STEREO, &false);
-        let relaunched = Store::with_backend(UserDefaults::suite(&suite));
+        let relaunched = suite.store();
         let shared = Shared::new(true);
         restore(&shared, &relaunched);
         assert_eq!(
             (shared.release_sounds(), shared.variation(), shared.spatial()),
             (false, true, false)
         );
-        UserDefaults::remove_suite(&suite);
     }
 }

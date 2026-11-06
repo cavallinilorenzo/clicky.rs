@@ -86,7 +86,7 @@ mod tests {
 
     use super::*;
     use crate::engine::mixer::{VOLUME, volume_gain};
-    use crate::settings::UserDefaults;
+    use crate::settings::{TestSuite, UserDefaults};
     use crate::ui::menu::SoundOption;
 
     /// Set in the child process that plays the session before Quit.
@@ -111,25 +111,24 @@ mod tests {
             store.set(&LOG_ENABLED, &true);
             return;
         }
-        let suite =
-            format!("io.github.cavallinilorenzo.clicky.tests.relaunch.{}", std::process::id());
+        // Removed when the test ends, pass or fail.
+        let suite = TestSuite::new("relaunch");
         let quit = Command::new(std::env::current_exe().unwrap())
             .args([NAME, "--exact", "--test-threads=1"])
-            .env(SUITE_ENV, &suite)
+            .env(SUITE_ENV, suite.name())
             .output()
             .unwrap();
         let child = String::from_utf8_lossy(&quit.stdout);
         assert!(quit.status.success() && child.contains("1 passed"), "{child}");
 
         // The relaunch: this process has never opened the suite.
-        let store = Store::with_backend(UserDefaults::suite(&suite));
+        let store = suite.store();
         let shared = restored(&store);
         let (sounds_on, pack, log) =
             (shared.enabled(), store.get(&packs::SELECTED_PACK), store.get(&LOG_ENABLED));
         shared.set_enabled(true);
         let gain = shared.master_gain();
         let options: Vec<bool> = SoundOption::ALL.iter().map(|o| o.is_on(&shared)).collect();
-        UserDefaults::remove_suite(&suite);
 
         assert!(!sounds_on, "on/off");
         assert_eq!(pack, "holy-panda");

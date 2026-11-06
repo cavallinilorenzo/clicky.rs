@@ -677,20 +677,17 @@ mod tests {
 
     #[test]
     fn the_volume_survives_a_relaunch() {
-        use crate::settings::{Store, UserDefaults};
-        let suite =
-            format!("io.github.cavallinilorenzo.clicky.tests.volume.{}", std::process::id());
-        let first = Store::with_backend(UserDefaults::suite(&suite));
+        let suite = crate::settings::TestSuite::new("volume");
+        let first = suite.store();
         assert_eq!(first.get(&VOLUME), 1.0, "loudest until moved");
         first.set(&VOLUME, &0.35);
-        let relaunched = Store::with_backend(UserDefaults::suite(&suite));
+        let relaunched = suite.store();
         assert_eq!(relaunched.get(&VOLUME), 0.35);
         let shared = Shared::new(true);
         restore_volume(&shared, &relaunched);
         // 0.35 is 26 dB below the loudest (40 dB × 0.65).
         let db = 20.0 * (shared.master_gain() / MASTER_GAIN).log10();
         assert!((db + 26.0).abs() < 1e-3, "the mixer plays at the saved volume: {db} dB");
-        UserDefaults::remove_suite(&suite);
     }
 
     /// A sine of `freq` Hz at `rate`, `amp` of full scale, as a leaked clip.
