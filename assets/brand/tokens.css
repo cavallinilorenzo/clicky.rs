@@ -1,0 +1,59 @@
+/* Clicky brand tokens. Source of truth: assets/brand/README.md.
+   Light by default; dark follows the system. */
+:root {
+  color-scheme: light dark;
+
+  /* Palette */
+  --clicky-navy: #2f5bd3;          /* the homing bar, links, buttons on light */
+  --clicky-navy-light: #4a7cf0;    /* tile gradient top */
+  --clicky-navy-deep: #1f3fa6;     /* tile gradient bottom */
+  --clicky-sky: #7fa2ff;           /* the accent on dark backgrounds */
+  --clicky-cream: #fffdf8;         /* keycap top face */
+  --clicky-paper: #f7f2ea;         /* page background */
+  --clicky-sand: #e9e0cf;          /* keycap skirt, borders, quiet surfaces */
+  --clicky-ink: #1f1b17;           /* text, the mark */
+  --clicky-stone: #6b6259;         /* secondary text on light */
+  --clicky-stone-light: #a79d92;   /* secondary text on dark */
+  --clicky-night: #16130f;         /* dark page background */
+  --clicky-night-surface: #221e19; /* dark cards */
+
+  --clicky-tile: linear-gradient(180deg, var(--clicky-navy-light), var(--clicky-navy-deep));
+
+  /* Roles (light) */
+  --bg: var(--clicky-paper);
+  --surface: var(--clicky-cream);
+  --border: var(--clicky-sand);
+  --text: var(--clicky-ink);
+  --text-secondary: var(--clicky-stone);
+  --accent: var(--clicky-navy);
+  --link: var(--clicky-navy);
+  --button-bg: var(--clicky-navy);
+  --button-text: var(--clicky-cream);
+
+  /* Type: system faces only, nothing to license or download. */
+  --font-display: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  --font-text: system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Shape: keycap corners. Radius ≈ a quarter of the side, as in the mark. */
+  --radius-key: 22%;
+  --radius-lg: 20px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --keycap-shadow: 0 4px 0 var(--clicky-sand), 0 6px 16px rgb(31 27 23 / 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: var(--clicky-night);
+    --surface: var(--clicky-night-surface);
+    --border: #3a332c;
+    --text: var(--clicky-paper);
+    --text-secondary: var(--clicky-stone-light);
+    --accent: var(--clicky-sky);
+    --link: var(--clicky-sky);
+    --button-bg: var(--clicky-sky);
+    --button-text: var(--clicky-night);
+    --keycap-shadow: 0 4px 0 #0b0907, 0 6px 16px rgb(0 0 0 / 0.4);
+  }
+}
