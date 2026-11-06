@@ -93,7 +93,7 @@ input (CGEventTap, listen-only)            │
 | `input/permission.rs` | Input Monitoring: `check` (`IOHIDCheckAccess`), `request` (from a click only), `Supervisor` (permission × tap → action and `Status`), the published status and its observer. | yes (state machine) |
 | `input/media.rs` | Media keys: reads a system-defined event's subtype and `data1` through `NSEvent` (the tap thread's only Objective-C call). | yes (decode, real NSEvent round trip) |
 | `selftest.rs` | `--self-test`: exercises the audio path without the key listener (cold start, rebuild while warm, hold window, second cold start). | |
-| `bench.rs` | `--bench-typing`: synthetic typing at 10 keys/s through `KeyState` → `Voicer` → ring → real output with the real hold window, idle phases, a rebuild per cycle; reports the process's CPU, idle wakeups and footprint per phase. | yes (arguments) |
+| `bench.rs` | `--bench-typing`: synthetic typing at 10 keys/s through `KeyState` → `Voicer` → ring → real output with the real hold window, idle phases, a rebuild per cycle; reports the process's CPU, idle wakeups and footprint per phase; writes the diagnostics log when its setting is on. | yes (arguments) |
 | `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`; hops input status changes to the main queue. | |
 | `ui/onboarding.rs` | The first-run window: `Model` (when it shows and which step: explain / granted / relaunch), the window, opening Input Monitoring settings, `relaunch`. | yes (model) |
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |

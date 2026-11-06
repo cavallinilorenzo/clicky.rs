@@ -8,14 +8,16 @@
 //! every 100 ms; one warm rebuild halfway, as after a device change), then
 //! stays idle for `--idle` seconds (an idle longer than the 2-minute hold
 //! window ends cold). After each phase it prints its own CPU use, idle
-//! wakeups and memory footprint. Inaudible unless `--audible`.
+//! wakeups and memory footprint. Inaudible unless `--audible`. Writes the
+//! diagnostics log when the app's Diagnostics Log setting is on.
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use crate::diagnostics::{self, Event};
+use crate::diagnostics::{self, Event, LOG_ENABLED};
 use crate::engine::{RING_CAPACITY, Shared, Voicer, ring};
 use crate::keys::{KeyEvent, KeyState};
+use crate::settings::Store;
 use crate::{audio, packs};
 
 /// One key every this long: 10 keys per second.
@@ -71,6 +73,10 @@ impl Plan {
 /// Runs `plan`; fails if a key press was dropped.
 pub fn run(plan: &Plan) -> Result<(), String> {
     diagnostics::set_stderr(true);
+    // The app's own log setting, so a soak leaves a log to grep like a real session.
+    if Store::standard().get(&LOG_ENABLED) {
+        diagnostics::set_enabled(true);
+    }
     audio::allow_system_sleep().map_err(|e| e.to_string())?;
     diagnostics::log(Event::SleepAllowed);
     let pack = packs::load_static(packs::DEFAULT_PACK)?;
