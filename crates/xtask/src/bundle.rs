@@ -71,6 +71,7 @@ pub fn run(root: &Path, args: &[String]) -> crate::Result<PathBuf> {
     for (source, name) in [
         ("THIRD_PARTY_NOTICES.md", "Third-Party Notices.txt"),
         ("assets/soundpacks/mechvibes/LICENSE", "Mechvibes.txt"),
+        ("assets/soundpacks/kbsim/LICENSE.md", "kbsim.txt"),
     ] {
         copy(&root.join(source), &resources.join("Licenses").join(name))?;
     }

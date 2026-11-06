@@ -1,11 +1,14 @@
 //! The menu bar user interface (AppKit through objc2): one status item and
-//! its menu. No Dock icon, no window (`LSUIElement` plus the accessory policy).
+//! its menu. No Dock icon (`LSUIElement` plus the accessory policy); the only
+//! window is the first-run permission window (`onboarding`).
 
 pub mod menu;
+pub mod onboarding;
 pub mod status_item;
 pub mod target;
 
 use std::cell::{OnceCell, RefCell};
+use std::ffi::c_void;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
@@ -15,6 +18,7 @@ use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSApplicationD
 use objc2_foundation::NSNotification;
 
 use crate::engine::Shared;
+use crate::input::permission;
 use crate::settings::Store;
 use status_item::{Icon, StatusItem};
 
@@ -24,13 +28,15 @@ pub struct Ui {
     pub shared: &'static Shared,
     pub store: Store,
     status: OnceCell<StatusItem>,
+    onboarding: onboarding::Onboarding,
 }
 
 impl Ui {
     /// Redraws the menu bar icon from the current state.
     pub fn refresh_status(&self) {
         if let Some(status) = self.status.get() {
-            status.show(Icon::for_state(self.shared.enabled()));
+            let needs_permission = permission::status().needs_permission();
+            status.show(Icon::for_state(self.shared.enabled(), needs_permission));
         }
     }
 }
@@ -46,12 +52,59 @@ pub fn run(shared: &'static Shared, store: Store) {
 }
 
 fn launch(mtm: MainThreadMarker, shared: &'static Shared, store: Store) {
-    let ui = Rc::new(Ui { mtm, shared, store, status: OnceCell::new() });
+    let ui = Rc::new(Ui {
+        mtm,
+        shared,
+        store,
+        status: OnceCell::new(),
+        onboarding: onboarding::Onboarding::default(),
+    });
     let menu = menu::build(&ui);
     let _ = ui.status.set(StatusItem::new(mtm, &menu.menu));
-    ui.refresh_status();
+    MAIN_UI.with(|cell| {
+        let _ = cell.set(ui.clone());
+    });
+    permission::observe(input_status_changed);
+    // The status may have changed before the observer was registered.
+    on_input_status(&ui);
     // The menu, its targets and the status item live as long as the app.
     std::mem::forget(menu);
+}
+
+/// The listener's permission status changed: the icon and the first-run
+/// window follow it (the menu's permission rows refresh when it opens).
+fn on_input_status(ui: &Rc<Ui>) {
+    ui.refresh_status();
+    onboarding::status_changed(ui);
+}
+
+thread_local! {
+    /// The UI, for callbacks that arrive on the main queue without context.
+    static MAIN_UI: OnceCell<Rc<Ui>> = const { OnceCell::new() };
+}
+
+/// Called on the tap thread after a status change; hops to the main thread.
+fn input_status_changed() {
+    // SAFETY: the main queue lives for the whole process; `on_main` takes no context.
+    unsafe { dispatch_async_f(&raw const _dispatch_main_q, std::ptr::null_mut(), on_main) };
+}
+
+extern "C" fn on_main(_context: *mut c_void) {
+    MAIN_UI.with(|cell| {
+        if let Some(ui) = cell.get() {
+            on_input_status(ui);
+        }
+    });
+}
+
+// libdispatch (part of libSystem): `dispatch_get_main_queue()` is `&_dispatch_main_q`.
+unsafe extern "C" {
+    static _dispatch_main_q: c_void;
+    fn dispatch_async_f(
+        queue: *const c_void,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
 }
 
 pub struct AppDelegateIvars {

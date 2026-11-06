@@ -6,12 +6,12 @@
 
 use std::f32::consts::PI;
 
-/// Loudness target: median attack-window RMS of a pack's press clips.
-pub const TARGET_DB: f32 = -30.0;
+use crate::loudness;
+
+/// Loudness target for every pack ([`pack_loudness_db`], LUFS-style dB).
+pub const TARGET_DB: f32 = -33.0;
 /// No clip may peak above this after normalisation.
 pub const CEILING_DB: f32 = -1.0;
-/// Length of the attack window used to measure loudness.
-pub const ATTACK_MS: f32 = 60.0;
 
 pub fn db_to_lin(db: f32) -> f32 {
     10f32.powf(db / 20.0)
@@ -96,16 +96,6 @@ pub fn trim_clip(x: &[f32], rate: u32, params: &TrimParams) -> Option<Vec<f32>> 
     Some(out)
 }
 
-/// RMS level (dBFS) of the first `ms` milliseconds of `x`.
-pub fn attack_rms_db(x: &[f32], rate: u32, ms: f32) -> f32 {
-    let n = ((ms / 1000.0 * rate as f32) as usize).min(x.len());
-    if n == 0 {
-        return lin_to_db(0.0);
-    }
-    let energy = x[..n].iter().map(|s| s * s).sum::<f32>() / n as f32;
-    lin_to_db(energy.sqrt())
-}
-
 pub fn median(mut values: Vec<f32>) -> f32 {
     if values.is_empty() {
         return 0.0;
@@ -115,31 +105,52 @@ pub fn median(mut values: Vec<f32>) -> f32 {
     if values.len().is_multiple_of(2) { (values[mid - 1] + values[mid]) / 2.0 } else { values[mid] }
 }
 
-/// Applies one gain to every clip so the median attack loudness of the press
-/// clips (`is_press`) hits `target_db`, then attenuates individual clips whose
-/// peak would exceed `ceiling_db`. Returns the pack gain in dB.
+/// What [`normalize`] did to a pack.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Normalized {
+    /// The one gain applied to the whole pack (dB).
+    pub gain_db: f32,
+    /// Clips turned down further so their peak stays under the ceiling.
+    pub limited: usize,
+    /// The largest such extra cut (dB, ≥ 0).
+    pub max_cut_db: f32,
+}
+
+/// The loudness of a pack: the median [`loudness::clip_loudness_db`] of the
+/// clips in `measured` (indices into `clips`, repeated once per key that plays
+/// the clip, so a clip shared by many keys weighs more).
+pub fn pack_loudness_db(clips: &[Vec<f32>], measured: &[usize], rate: u32) -> f32 {
+    median(measured.iter().map(|&i| loudness::clip_loudness_db(&clips[i], rate)).collect())
+}
+
+/// Applies one gain to every clip so the pack's loudness ([`pack_loudness_db`]
+/// over `measured`) hits `target_db`, then turns down any single clip whose
+/// peak would pass `ceiling_db`. Release clips get the same pack gain.
 pub fn normalize(
     clips: &mut [Vec<f32>],
-    is_press: &[bool],
+    measured: &[usize],
     rate: u32,
     target_db: f32,
     ceiling_db: f32,
-) -> f32 {
-    let level = |c: &Vec<f32>| attack_rms_db(c, rate, ATTACK_MS);
-    let mut levels: Vec<f32> =
-        clips.iter().zip(is_press).filter(|(_, press)| **press).map(|(c, _)| level(c)).collect();
-    if levels.is_empty() {
-        levels = clips.iter().map(level).collect();
-    }
-    let gain_db = target_db - median(levels);
+) -> Normalized {
+    let all: Vec<usize> = (0..clips.len()).collect();
+    let measured = if measured.is_empty() { &all[..] } else { measured };
+    let gain_db = target_db - pack_loudness_db(clips, measured, rate);
     let gain = db_to_lin(gain_db);
     let ceiling = db_to_lin(ceiling_db);
+    let (mut limited, mut max_cut_db) = (0, 0.0f32);
     for clip in clips.iter_mut() {
         let projected = peak(clip) * gain;
-        let g = if projected > ceiling { gain * ceiling / projected } else { gain };
+        let g = if projected > ceiling {
+            limited += 1;
+            max_cut_db = max_cut_db.max(lin_to_db(projected / ceiling));
+            gain * ceiling / projected
+        } else {
+            gain
+        };
         clip.iter_mut().for_each(|s| *s *= g);
     }
-    gain_db
+    Normalized { gain_db, limited, max_cut_db }
 }
 
 /// Quantises to 16-bit with triangular (TPDF) dither; `seed` advances.
@@ -219,13 +230,25 @@ mod tests {
         assert!(trim_clip(&[], RATE, &TrimParams::default()).is_none());
     }
 
+    fn loudness(c: &[f32]) -> f32 {
+        loudness::clip_loudness_db(c, RATE)
+    }
+
     #[test]
     fn normalize_hits_the_target_median() {
         let mut clips: Vec<Vec<f32>> =
             [0.1, 0.5, 1.0].iter().map(|&a| click(0.0, 80.0, 0.0, a)).collect();
-        normalize(&mut clips, &[true, true, true], RATE, TEST_TARGET_DB, TEST_CEILING_DB);
-        let levels: Vec<f32> = clips.iter().map(|c| attack_rms_db(c, RATE, ATTACK_MS)).collect();
-        assert!((median(levels) - TEST_TARGET_DB).abs() < 0.05);
+        let done = normalize(&mut clips, &[0, 1, 2], RATE, TEST_TARGET_DB, TEST_CEILING_DB);
+        assert!((loudness(&clips[1]) - TEST_TARGET_DB).abs() < 0.05);
+        assert_eq!(done.limited, 0);
+    }
+
+    #[test]
+    fn a_clip_shared_by_many_keys_weighs_more() {
+        let mut clips: Vec<Vec<f32>> =
+            [0.1, 0.5, 1.0].iter().map(|&a| click(0.0, 80.0, 0.0, a)).collect();
+        normalize(&mut clips, &[0, 0, 0, 2], RATE, TEST_TARGET_DB, TEST_CEILING_DB);
+        assert!((loudness(&clips[0]) - TEST_TARGET_DB).abs() < 0.05, "clip 0 is the median");
     }
 
     #[test]
@@ -234,10 +257,11 @@ mod tests {
         let mut spike = vec![0.0; samples(80.0)];
         spike[10] = 1.0;
         let mut clips = vec![quiet.clone(), quiet.clone(), spike];
-        let gain_db =
-            normalize(&mut clips, &[true, true, true], RATE, TEST_TARGET_DB, TEST_CEILING_DB);
-        let gain = db_to_lin(gain_db);
+        let done = normalize(&mut clips, &[0, 1, 2], RATE, TEST_TARGET_DB, TEST_CEILING_DB);
+        let gain = db_to_lin(done.gain_db);
         assert!(peak(&clips[2]) <= db_to_lin(TEST_CEILING_DB) + 1e-6);
+        assert_eq!(done.limited, 1);
+        assert!(done.max_cut_db > 0.0);
         for (a, b) in quiet.iter().zip(&clips[0]) {
             assert!((a * gain - b).abs() < 1e-6, "quiet clips get exactly the pack gain");
         }
@@ -248,8 +272,8 @@ mod tests {
         let press = click(0.0, 80.0, 0.0, 0.4);
         let release = click(0.0, 40.0, 0.0, 0.05);
         let mut clips = vec![press.clone(), release.clone()];
-        let gain =
-            db_to_lin(normalize(&mut clips, &[true, false], RATE, TEST_TARGET_DB, TEST_CEILING_DB));
+        let done = normalize(&mut clips, &[0], RATE, TEST_TARGET_DB, TEST_CEILING_DB);
+        let gain = db_to_lin(done.gain_db);
         assert!((clips[1][100] - release[100] * gain).abs() < 1e-6);
         assert!((clips[0][100] - press[100] * gain).abs() < 1e-6);
     }

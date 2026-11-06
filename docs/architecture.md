@@ -28,6 +28,12 @@ input (CGEventTap, listen-only)            │
   is a physical press (one per press, never auto-repeat) or release;
   `Voicer` picks the clip through `keys::press_clip` and pushes a `Play` into
   the lock-free ring. It never blocks: a full ring drops the press and counts it.
+  The same thread supervises the Input Monitoring permission
+  (`input::permission::Supervisor`): every second while there is no tap, every
+  3 s while listening, it checks the permission (`IOHIDCheckAccess`, no prompt)
+  and the tap, creates, drops or recreates the tap, and publishes a `Status`
+  (missing / listening / revoked / needs relaunch). Each change is posted to the
+  main queue, where the status icon and the first-run window follow it.
 - The **render callback** drains the ring into the `Mixer` and renders. No locks,
   no allocation, no logging. It records the first render after each start. The
   mixer resamples each voice to the device rate, fades out stolen voices, ramps the
@@ -43,7 +49,11 @@ input (CGEventTap, listen-only)            │
   The volume slider sets the master gain (`Shared::set_master_gain`) on every move
   and saves `VOLUME`; `app.rs` applies the saved volume at launch.
 - Soundpacks are built at build time (`cargo xtask packs`) from the committed
-  source audio and loaded at launch from `Clicky.app/Contents/Resources/Packs`.
+  source audio. At launch the app reads every pack's description from
+  `Clicky.app/Contents/Resources/Packs` and the audio of the saved one; a pack's
+  audio is read the first time it is picked and kept for the life of the process.
+- The **preview thread** plays the pick preview through its own `Voicer` and ring,
+  drained by the render callback after the key ring.
 
 ## Module map (`crates/clicky/src`)
 
@@ -54,9 +64,10 @@ input (CGEventTap, listen-only)            │
 | `settings.rs` | Typed `Setting<T>` + `Store` over `NSUserDefaults` (in-memory backend for tests). Each feature declares its own `Setting` const next to its code. | yes |
 | `diagnostics.rs` | The optional log: the `Event` enum (no key data, by construction), line formatting, the file logger. `LOG_ENABLED` setting. | yes |
 | `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition`, `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input logged once per kind). | yes |
-| `packs.rs` | Finding and loading `.clickypack` files; `DEFAULT_PACK`. | yes |
-| `engine/mod.rs` | `Shared` atomics, `Kick`, `Voicer`; `SOUNDS_ON` setting, `MASTER_GAIN`. | yes |
-| `engine/ring.rs` | Wait-free SPSC ring. | yes |
+| `packs.rs` | The `Library` of bundled soundpacks (descriptions read at launch, audio on first use, never freed), grouped by `SwitchType`; `load_saved` (saved id → default → first that loads); `DEFAULT_PACK`, `SELECTED_PACK` setting. | yes |
+| `engine/mod.rs` | `Shared` atomics (including the current soundpack, an `AtomicPtr` swapped by the picker), `Kick`, `Voicer`; `SOUNDS_ON` setting, `MASTER_GAIN`. | yes |
+| `engine/preview.rs` | The pick preview: its own thread, `Voicer` and ring press a short "rust ⏎" from the current soundpack; picking again restarts it. | yes |
+| `engine/ring.rs` | Wait-free SPSC ring; `Consumer::with_producer` chains a second ring (the preview's) into the same consumer. | yes |
 | `engine/mixer.rs` | Voice pool (32 voices + 16 slots for stolen voices fading out over 5 ms), master-gain ramp (≤ full scale per 20 ms, one-pole smoothed, per frame), headroom, `VOLUME` setting and `volume_gain` (dB curve). | yes |
 | `engine/mixer/resample.rs` | Kaiser-windowed sinc (32 zero crossings, β = 9, cutoff 0.95 × the lower Nyquist), 256-phase polyphase tables built and cached off the real-time path. | yes (via the mixer) |
 | `engine/mixer/limiter.rs` | Look-ahead peak limiter, ceiling −1 dBFS, 1.5 ms look-ahead with no latency (voices are rendered ahead), 60 ms release. | yes (via the mixer) |
@@ -69,18 +80,23 @@ input (CGEventTap, listen-only)            │
 | `audio/power.rs` | `NSWorkspace` will-sleep / did-wake observers. | |
 | `audio/output.rs` | CoreAudio adapter: AUHAL unit bound to the current default device at its current rate, render callback with pre-roll and fade-out, rebuild. | yes (render state) |
 | `audio/ffi.rs`, `input/ffi.rs` | Hand-written FFI (AudioToolbox, CoreAudio, CoreGraphics, CoreFoundation). | layout tests |
-| `input/mod.rs` | The listen-only event tap thread (key down/up, flags-changed, system-defined) and its minimal permission retry. | |
+| `input/mod.rs` | The listen-only event tap thread (key down/up, flags-changed, system-defined); creates, drops and recreates the tap as `permission::Supervisor` says. | |
+| `input/permission.rs` | Input Monitoring: `check` (`IOHIDCheckAccess`), `request` (from a click only), `Supervisor` (permission × tap → action and `Status`), the published status and its observer. | yes (state machine) |
 | `input/media.rs` | Media keys: reads a system-defined event's subtype and `data1` through `NSEvent` (the tap thread's only Objective-C call). | yes (decode, real NSEvent round trip) |
 | `selftest.rs` | `--self-test`: exercises the audio path without the key listener (cold start, rebuild while warm, hold window, second cold start). | |
-| `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`. | |
+| `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`; hops input status changes to the main queue. | |
+| `ui/onboarding.rs` | The first-run window: `Model` (when it shows and which step: explain / granted / relaunch), the window, opening Input Monitoring settings, `relaunch`. | yes (model) |
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
-| `ui/status_item.rs` | The menu bar icon and its states. | yes (state) |
+| `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). | yes (state) |
 | `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order. | |
-| `ui/menu/sound_switch.rs`, `volume.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. | |
+| `ui/menu/sound_switch.rs`, `soundpack.rs`, `volume.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
+| `ui/menu/launch_at_login.rs` | "Launch at Login" over `SMAppService.mainAppService`, behind the `LoginItem` seam; reads the real state on each menu open. | yes (toggle, view) |
+| `ui/menu/permission.rs` | The rows shown while sounds are unavailable for lack of permission, with the fix. | yes (rows) |
 
-`crates/xtask/src`: `catalog.rs` (which packs ship), `sources/` (one adapter per
-source layout: `mechvibes.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),
-`packs.rs` (pipeline + invariants), `bundle.rs` (universal build, Info.plist,
+`crates/xtask/src`: `catalog.rs` (which packs ship, in menu order), `sources/` (one adapter per
+source layout: `mechvibes.rs`, `kbsim.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),
+`loudness.rs` (K-weighted 100 ms attack loudness), `packs.rs` (pipeline + invariants, incl. the
+all-21-packs loudness/onset test), `bundle.rs` (universal build, Info.plist,
 bundle layout), `sign.rs` (ADR 0002 signing).
 
 ## Where each follow-up ticket works
@@ -92,7 +108,7 @@ bundle layout), `sign.rs` (ADR 0002 signing).
 | #6 Mixer, limiter, volume (done) | `engine/mixer.rs`, `engine/mixer/{resample,limiter,stress}.rs`, `ui/menu/volume.rs` | one line in `ui/menu/mod.rs::build`; one line in `app.rs` (saved volume at launch); `VOLUME` setting in `engine/mixer.rs`; objc2 features `NSImageView`, `NSSlider` |
 | #7 21 packs, picker, About | `assets/soundpacks/**`, `crates/xtask/src/sources/kbsim.rs`, `catalog.rs`, `packs.rs` (app: library of all packs, `SELECTED_PACK` setting), new `ui/menu/soundpack.rs`, `ui/menu/about.rs`, `THIRD_PARTY_NOTICES.md` | two lines in `ui/menu/mod.rs::build`; `Voicer` needs a switchable pack (e.g. an atomic pointer) in `engine/mod.rs`; the `SourceKind` enum |
 | #8 Sound options | `keys.rs`/`engine` voicer options, new `ui/menu/options.rs`; release sounds hang off `Transition::Release` in `input/mod.rs` | one line in `ui/menu/mod.rs::build`; `Play` gains per-voice pan/pitch |
-| #9 First run, permission, Launch at Login | new `ui/onboarding.rs`, `ui/menu/launch_at_login.rs`, `ui/menu/permission.rs`, `input/permission.rs` | one line each in `ui/menu/mod.rs::build`; a `NeedsPermission` state in `ui/status_item.rs`; `input::start`'s retry loop |
+| #9 First run, permission, Launch at Login (done) | new `ui/onboarding.rs`, `ui/menu/launch_at_login.rs`, `ui/menu/permission.rs`, `input/permission.rs` | one line each in `ui/menu/mod.rs::build`; a `NeedsPermission` state in `ui/status_item.rs`; `input::start`'s retry loop |
 
 ### Hot spots
 

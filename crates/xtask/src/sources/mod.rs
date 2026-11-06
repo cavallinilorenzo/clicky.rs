@@ -1,11 +1,12 @@
 //! Adapters that read original soundpack layouts into a common shape.
 //!
-//! Only Mechvibes sprites are needed for the default soundpack; the kbsim
-//! adapter arrives with the other bundled packs (issue #7).
+//! `mechvibes`: one sprite sliced per key (libuiohook scan codes);
+//! `kbsim`: one recording per keyboard row plus a few special keys.
 //!
 //! Derived from Rustyvibes 2 (MIT, © 2021–2026 Kunal Bagaria,
 //! https://github.com/KunalBagaria/rustyvibes-v2), `crates/xtask/src/sources/mod.rs`.
 
+pub mod kbsim;
 pub mod mechvibes;
 
 use clicky_pack::KEY_SLOTS;

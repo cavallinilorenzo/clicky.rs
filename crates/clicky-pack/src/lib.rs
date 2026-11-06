@@ -5,4 +5,4 @@ pub mod format;
 pub mod keys;
 pub mod mechvibes;
 
-pub use format::{Clip, FormatError, KEY_SLOTS, Meta, Pack};
+pub use format::{Clip, FormatError, KEY_SLOTS, Meta, Pack, PackInfo};
