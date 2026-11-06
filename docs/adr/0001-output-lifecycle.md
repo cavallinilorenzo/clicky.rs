@@ -26,3 +26,5 @@ We decided:
 ## Consequences
 
 During the hold window Bluetooth headphones receive silence and stay in use. The Mac itself can still idle-sleep.
+
+Another process's audio tap can still hold the Mac awake during the hold window. Measured on 2026-11-06 (macOS 27, built-in speakers): while any output runs, `coreaudiod` holds a `PreventUserIdleSystemSleep` assertion named `com.apple.audio.AudioTap-….context.preventuseridlesleep` (resource `audio-in`). `pmset -g assertions -v` shows it as "Created for PID" of the tapping process (`corespeechd`, Siri), not Clicky. `afplay` alone raises it too, along with its own `BuiltInSpeakerDevice` assertion, which Clicky never raises. It lasts while Clicky is warm and is gone about 10 s after the output goes cold. So on a Mac with such a tap, idle sleep may come up to about 2 minutes after the last key press, not at a 1-minute idle-sleep setting. Clicky cannot opt out of another process's tap. Only a shorter hold window would shorten this, at the cost of more cold starts, and that choice is open.
