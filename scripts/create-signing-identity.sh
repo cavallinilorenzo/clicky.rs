@@ -55,13 +55,22 @@ echo "Creating the key and the self-signed certificate..."
 "$OPENSSL" req -x509 -newkey rsa:2048 -nodes -days 3650 \
     -config "$WORK/cert.cnf" -keyout "$WORK/key.pem" -out "$WORK/cert.pem" 2>/dev/null
 
-# A throwaway password, only for moving the key into the keychain.
+# A throwaway password, only for moving the key into the keychain. openssl
+# reads it from the environment of its own process, so it never appears in
+# the process list.
 PASSWORD="$("$OPENSSL" rand -hex 16)"
-"$OPENSSL" pkcs12 -export -name "$NAME" -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
-    -out "$WORK/identity.p12" -passout "pass:$PASSWORD"
+CLICKY_P12_PASSWORD="$PASSWORD" "$OPENSSL" pkcs12 -export -name "$NAME" \
+    -inkey "$WORK/key.pem" -in "$WORK/cert.pem" \
+    -out "$WORK/identity.p12" -passout env:CLICKY_P12_PASSWORD
 
 echo "Importing it into the login keychain..."
+# `security import` takes the password only as an argument (-P) or from a GUI
+# prompt; it has no environment or file form. So for the second or so of the
+# import, other processes of this Mac can read it in the process list. That
+# is acceptable: it only unlocks identity.p12, which sits in a private (0700)
+# temporary directory and is deleted on exit, and it is never reused.
 security import "$WORK/identity.p12" -k "$KEYCHAIN" -f pkcs12 -P "$PASSWORD" -T /usr/bin/codesign
+unset PASSWORD
 
 echo "Trusting it for code signing (macOS asks for your password)..."
 if ! security add-trusted-cert -r trustRoot -p codeSign -k "$KEYCHAIN" "$WORK/cert.pem"; then
