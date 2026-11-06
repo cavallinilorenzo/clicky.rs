@@ -87,10 +87,6 @@ impl Entry {
     }
 
     /// Whether the pack was recorded with release sounds.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "issue #8 greys out Key Release Sounds with it")
-    )]
     pub fn has_release(&self) -> bool {
         self.info.has_release
     }

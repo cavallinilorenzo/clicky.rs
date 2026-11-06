@@ -2,13 +2,19 @@
 //! fixed buffers, no allocation, no locks, no system calls.
 //!
 //! ```text
-//! voices ─(resample, voice gain, steal fade)─▶ Σ ─▶ × master (ramped per frame)
-//!        ─▶ look-ahead limiter (ceiling −1 dBFS) ─▶ left = right
+//! voices ─(resample × pitch, voice gain, pan, steal fade)─▶ Σ left, Σ right
+//!        ─▶ × master (ramped per frame) ─▶ look-ahead limiter (ceiling −1 dBFS, linked)
 //! ```
 //!
 //! - **Resampling**: a voice at its soundpack's rate is converted to the
 //!   device rate with a windowed-sinc polyphase filter (`resample.rs`); at
-//!   the same rate it is read sample for sample.
+//!   the same rate and pitch 1 it is read sample for sample. A voice's
+//!   [`Play::pitch`] (Natural Variation) scales its read step, so it plays
+//!   slightly faster and higher, or slower and lower.
+//! - **Panning**: equal power ([`pan_gains`]), normalised so a centred voice
+//!   has unity gain on both sides; a centred voice is bit-identical on both.
+//!   On a one-channel output ([`Mixer::set_mono`]) every voice plays centred:
+//!   CoreAudio feeds such a device only our left channel.
 //! - **Stealing**: with [`MAX_VOICES`] sounding, a new voice makes the oldest
 //!   fade out over [`STEAL_FADE_SECS`] in one of the spare slots, instead of
 //!   cutting it.
@@ -18,9 +24,11 @@
 //!   of 0 (sounds off, volume at zero, or the output's fade-out) is reached
 //!   within the block, and then every voice is dropped.
 //! - **Headroom and limiter**: the loudest volume is `MASTER_GAIN` (−4.4 dB),
-//!   so a lone clip (≤ −1 dBFS) peaks at −5.4 dBFS and only overlapping voices
-//!   reach the limiter (`limiter.rs`), which holds every sample at or below
-//!   −1 dBFS without latency.
+//!   so a lone clip (≤ −1 dBFS) peaks at −5.4 dBFS, or −1.9 dBFS with the
+//!   largest variation (+1.5 dB) and pan (+2 dB on one side), and only
+//!   overlapping voices reach the limiter (`limiter.rs`), which holds every
+//!   sample of both channels at or below −1 dBFS without latency. Its gain is
+//!   the same on both channels, so limiting never shifts the stereo image.
 //!
 //! The stress render (`stress.rs`) checks all of this end to end.
 
@@ -70,16 +78,41 @@ pub const VOLUME_RAMP_SECS: f64 = 0.020;
 /// Time constant of the smoothing after the ramp.
 const VOLUME_SMOOTH_SECS: f64 = 0.002;
 
+/// The pitch range a voice may ask for. Above `1 / 0.95` the resampler's
+/// passband (95 % of Nyquist) would be shifted past the device's Nyquist
+/// frequency and alias.
+const PITCH_RANGE: (f32, f32) = (0.9, 1.05);
+const _: () = assert!(PITCH_RANGE.1 < 1.0 / 0.95);
+
 const ONE: u64 = 1 << 32;
 const I16_SCALE: f32 = 1.0 / 32_768.0;
 const BUFFER: usize = CHUNK + MAX_LOOKAHEAD;
 
-/// A request to start one voice: a press sound at its recorded sample rate.
-#[derive(Clone, Copy, Debug)]
+/// A request to start one voice: a press or release sound at its recorded
+/// sample rate.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Play {
     pub samples: &'static [i16],
     pub src_rate: u32,
     pub gain: f32,
+    /// Where the voice sits: −1 hard left, 0 centre, 1 hard right.
+    pub pan: f32,
+    /// Playback rate relative to the recording: 1.02 plays 2 % faster and
+    /// higher. Clamped to 0.9–1.05.
+    pub pitch: f32,
+}
+
+/// Equal-power pan gains (left, right) for `pan` in −1..=1, normalised so a
+/// centred voice keeps unity gain on both sides (and is exactly 1.0 there).
+///
+/// Derived from Rustyvibes 2 (MIT, © 2021–2026 Kunal Bagaria,
+/// https://github.com/KunalBagaria/rustyvibes-v2), `crates/rustyvibes/src/engine/mod.rs`.
+pub fn pan_gains(pan: f32) -> (f32, f32) {
+    if pan == 0.0 || !pan.is_finite() {
+        return (1.0, 1.0);
+    }
+    let angle = (pan.clamp(-1.0, 1.0) + 1.0) * std::f32::consts::FRAC_PI_4;
+    (angle.cos() * std::f32::consts::SQRT_2, angle.sin() * std::f32::consts::SQRT_2)
 }
 
 #[derive(Clone, Copy)]
@@ -92,7 +125,9 @@ struct Voice {
     step: u64,
     /// `None`: same rate as the device, read sample for sample.
     kernel: Option<&'static Kernel>,
-    gain: f32,
+    /// Voice gain times the pan gain, per side.
+    left: f32,
+    right: f32,
     /// Start order, for stealing the oldest voice.
     serial: u64,
     /// Frames left of a steal fade-out (`None`: not stolen).
@@ -100,11 +135,12 @@ struct Voice {
 }
 
 impl Voice {
-    /// Adds the voice into `out`. Returns `true` once it has ended.
-    fn mix(&mut self, out: &mut [f32], fade_frames: u32) -> bool {
-        let gain = self.gain * I16_SCALE;
+    /// Adds the voice into `left` and `right` (the same length). Returns
+    /// `true` once it has ended.
+    fn mix(&mut self, left: &mut [f32], right: &mut [f32], fade_frames: u32) -> bool {
+        let (gain_l, gain_r) = (self.left * I16_SCALE, self.right * I16_SCALE);
         let fade_step = 1.0 / fade_frames as f32;
-        for o in out.iter_mut() {
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             if self.pos >= self.end {
                 return true;
             }
@@ -117,7 +153,8 @@ impl Voice {
                     *left as f32 * fade_step
                 }
             };
-            *o += s * gain * env;
+            *l += s * gain_l * env;
+            *r += s * gain_r * env;
             self.pos += self.step;
         }
         self.pos >= self.end || self.fading == Some(0)
@@ -146,11 +183,13 @@ pub struct Mixer {
     smooth: f32,
     fade_frames: u32,
     limiter: Limiter,
-    /// The pre-master mix: `mix[..lookahead]` is already rendered, the
-    /// frames the next block starts with.
-    mix: [f32; BUFFER],
+    /// One-channel output: pans are ignored.
+    mono: bool,
+    /// The pre-master mix, left and right: `mix[_][..lookahead]` is already
+    /// rendered, the frames the next block starts with.
+    mix: [[f32; BUFFER]; 2],
     /// `mix` times the master gain, for the limiter.
-    scaled: [f32; BUFFER],
+    scaled: [[f32; BUFFER]; 2],
 }
 
 impl Mixer {
@@ -168,9 +207,17 @@ impl Mixer {
             smooth: (1.0 - (-1.0 / (VOLUME_SMOOTH_SECS * out_rate)).exp()) as f32,
             fade_frames: ((STEAL_FADE_SECS * out_rate).round() as u32).max(1),
             limiter: Limiter::new(out_rate),
-            mix: [0.0; BUFFER],
-            scaled: [0.0; BUFFER],
+            mono: false,
+            mix: [[0.0; BUFFER]; 2],
+            scaled: [[0.0; BUFFER]; 2],
         }
+    }
+
+    /// Whether the device has a single channel. CoreAudio then plays only our
+    /// left channel, so every voice is mixed centred (at its unpanned level).
+    /// Applies to voices started afterwards; call it before the output starts.
+    pub fn set_mono(&mut self, mono: bool) {
+        self.mono = mono;
     }
 
     /// Number of voices sounding, including stolen ones still fading out.
@@ -185,7 +232,9 @@ impl Mixer {
         if play.samples.is_empty() || play.src_rate == 0 {
             return;
         }
-        let ratio = f64::from(play.src_rate) / self.out_rate;
+        let pitch = if play.pitch.is_finite() { play.pitch } else { 1.0 };
+        let pitch = pitch.clamp(PITCH_RANGE.0, PITCH_RANGE.1);
+        let ratio = f64::from(play.src_rate) * f64::from(pitch) / self.out_rate;
         let step = ((ratio * ONE as f64).round() as u64).max(1);
         let (kernel, tail) = if step == ONE {
             (None, 0)
@@ -194,13 +243,15 @@ impl Mixer {
             (Some(kernel), kernel.half() as u64)
         };
         self.serial += 1;
+        let (pan_l, pan_r) = if self.mono { (1.0, 1.0) } else { pan_gains(play.pan) };
         let mut voice = Voice {
             samples: play.samples,
             pos: 0,
             end: (play.samples.len() as u64 + tail) << 32,
             step,
             kernel,
-            gain: play.gain,
+            left: play.gain * pan_l,
+            right: play.gain * pan_r,
             serial: self.serial,
             fading: None,
         };
@@ -208,7 +259,8 @@ impl Mixer {
         // The voice's first frames go into the look-ahead part of the mix,
         // so that every voice is rendered as far ahead as the others.
         let lookahead = self.limiter.lookahead();
-        if voice.mix(&mut self.mix[..lookahead], self.fade_frames) {
+        let [left, right] = &mut self.mix;
+        if voice.mix(&mut left[..lookahead], &mut right[..lookahead], self.fade_frames) {
             return;
         }
         if let Some(slot) = self.voices.iter_mut().find(|v| v.is_none()) {
@@ -252,7 +304,7 @@ impl Mixer {
         let target = if master.is_finite() { master.max(0.0) } else { 0.0 };
         let lookahead = self.limiter.lookahead();
         let sounding = self.voices.iter().any(Option::is_some)
-            || self.mix[..lookahead].iter().any(|s| *s != 0.0);
+            || self.mix.iter().any(|m| m[..lookahead].iter().any(|s| *s != 0.0));
         let mut gain = self.gain.unwrap_or(Master::at(target));
         if !sounding {
             left.fill(0.0);
@@ -269,34 +321,36 @@ impl Mixer {
             (self.slew, self.smooth)
         };
         let mut done = 0;
-        for out in left.chunks_mut(CHUNK) {
-            done += out.len();
-            self.render_chunk(out, n - done, &mut gain, (target, step, smooth));
+        for (l, r) in left.chunks_mut(CHUNK).zip(right.chunks_mut(CHUNK)) {
+            done += l.len();
+            self.render_chunk([l, r], n - done, &mut gain, (target, step, smooth));
         }
-        right.copy_from_slice(left);
         self.gain = Some(gain);
         if target == 0.0 {
             self.voices = [None; SLOTS];
-            self.mix = [0.0; BUFFER];
+            self.mix = [[0.0; BUFFER]; 2];
             self.limiter.reset();
         }
         true
     }
 
-    /// Renders `out`, followed by `rest` more frames in this block.
+    /// Renders `out` (left, right), followed by `rest` more frames in this block.
     fn render_chunk(
         &mut self,
-        out: &mut [f32],
+        out: [&mut [f32]; 2],
         rest: usize,
         gain: &mut Master,
         (target, step, smooth): (f32, f32, f32),
     ) {
-        let n = out.len();
+        let n = out[0].len();
         let la = self.limiter.lookahead();
-        self.mix[la..la + n].fill(0.0);
+        let [left, right] = &mut self.mix;
+        let (left, right) = (&mut left[la..la + n], &mut right[la..la + n]);
+        left.fill(0.0);
+        right.fill(0.0);
         for slot in self.voices.iter_mut() {
             if let Some(voice) = slot
-                && voice.mix(&mut self.mix[la..la + n], self.fade_frames)
+                && voice.mix(left, right, self.fade_frames)
             {
                 *slot = None;
             }
@@ -307,7 +361,9 @@ impl Mixer {
         // limiter never meets a peak higher than it foresaw.
         let mut g = *gain;
         let mut highest = 0.0;
-        for (t, (x, m)) in self.scaled[..n + la].iter_mut().zip(&self.mix).enumerate() {
+        let [scaled_l, scaled_r] = &mut self.scaled;
+        let [mix_l, mix_r] = &self.mix;
+        for t in 0..n + la {
             let at = if t < n + rest {
                 highest = g.next(target, step, smooth);
                 highest
@@ -315,13 +371,16 @@ impl Mixer {
                 highest += self.slew;
                 highest
             };
-            *x = m * at;
+            scaled_l[t] = mix_l[t] * at;
+            scaled_r[t] = mix_r[t] * at;
             if t + 1 == n {
                 *gain = g;
             }
         }
-        self.limiter.process(&self.scaled[..n + la], out);
-        self.mix.copy_within(n..n + la, 0);
+        self.limiter.process([&scaled_l[..n + la], &scaled_r[..n + la]], out);
+        for m in &mut self.mix {
+            m.copy_within(n..n + la, 0);
+        }
     }
 }
 
@@ -364,14 +423,84 @@ mod tests {
     use super::*;
 
     pub fn play(samples: &'static [i16], src_rate: u32, gain: f32) -> Play {
-        Play { samples, src_rate, gain }
+        Play { samples, src_rate, gain, pan: 0.0, pitch: 1.0 }
     }
 
     fn render(mixer: &mut Mixer, frames: usize, master: f32) -> (Vec<f32>, bool) {
-        let (mut l, mut r) = (vec![9.0; frames], vec![9.0; frames]);
-        let sounding = mixer.render(&mut l, &mut r, master);
+        let ((l, r), sounding) = render_stereo(mixer, frames, master);
         assert_eq!(l, r, "the mix is centred");
         (l, sounding)
+    }
+
+    fn render_stereo(
+        mixer: &mut Mixer,
+        frames: usize,
+        master: f32,
+    ) -> ((Vec<f32>, Vec<f32>), bool) {
+        let (mut l, mut r) = (vec![9.0; frames], vec![9.0; frames]);
+        let sounding = mixer.render(&mut l, &mut r, master);
+        ((l, r), sounding)
+    }
+
+    #[test]
+    fn a_panned_voice_keeps_equal_power_and_leans_to_its_side() {
+        static CLIP: [i16; 4] = [16_384; 4];
+        for (pan, louder_left) in [(-0.4, true), (0.4, false)] {
+            let mut mixer = Mixer::new(48_000.0);
+            mixer.start(&Play { pan, ..play(&CLIP, 48_000, 1.0) });
+            let ((l, r), _) = render_stereo(&mut mixer, 4, 1.0);
+            assert_eq!(l[0] > r[0], louder_left, "pan {pan}: {l:?} {r:?}");
+            // Equal power, normalised so a centred voice is 0.5 on each side.
+            let power = l[0] * l[0] + r[0] * r[0];
+            assert!((power - 2.0 * 0.25).abs() < 1e-6, "pan {pan}: power {power}");
+            // Pan 0.4 is 27° from hard left: cos 27° · √2 = 1.260 (+2.0 dB).
+            let near = if louder_left { l[0] } else { r[0] };
+            assert!((near / 0.5 - 1.2600).abs() < 1e-3, "{near}");
+        }
+    }
+
+    #[test]
+    fn a_centred_voice_is_bit_identical_on_both_sides() {
+        let clip = sine(1_000.0, 44_100, 0.5, 0.05);
+        let mut mixer = Mixer::new(48_000.0);
+        mixer.start(&play(clip, 44_100, 0.8));
+        let ((l, r), _) = render_stereo(&mut mixer, 3_000, 0.6);
+        assert_eq!(l, r);
+    }
+
+    #[test]
+    fn on_a_mono_output_every_voice_plays_centred_at_full_level() {
+        // CoreAudio feeds a one-channel device only the left channel.
+        static CLIP: [i16; 4] = [8_192; 4];
+        let mut mixer = Mixer::new(48_000.0);
+        mixer.set_mono(true);
+        mixer.start(&Play { pan: 0.4, ..play(&CLIP, 48_000, 1.0) });
+        mixer.start(&Play { pan: -0.4, ..play(&CLIP, 48_000, 1.0) });
+        let ((l, r), _) = render_stereo(&mut mixer, 4, 1.0);
+        assert_eq!(l, r);
+        assert_eq!(l, vec![0.5; 4], "each voice at its unpanned level");
+    }
+
+    #[test]
+    fn pitch_changes_the_playback_rate() {
+        for (src, out) in [(48_000, 48_000.0), (44_100, 48_000.0), (48_000, 44_100.0)] {
+            let clip = sine(1_000.0, src, 0.5, 0.2);
+            for pitch in [0.98f32, 1.02] {
+                let mut mixer = Mixer::new(out);
+                mixer.start(&Play { pitch, ..play(clip, src, 1.0) });
+                let frames = (clip.len() as f64 * out / f64::from(src)) as usize;
+                let ((l, _), _) = render_stereo(&mut mixer, frames * 11 / 10, 1.0);
+                let middle = &l[frames / 4..frames / 2];
+                let heard = 1_000.0 * f64::from(pitch);
+                let (amp, residual_db) = fit(middle, heard, out);
+                assert!((amp - 0.5).abs() < 0.001, "{src}->{out} ×{pitch}: amplitude {amp}");
+                assert!(residual_db < -80.0, "{src}->{out} ×{pitch}: residual {residual_db:.1} dB");
+                // And the clip ends sooner (or later) by the same factor.
+                let len = l.iter().rposition(|s| s.abs() > 1e-3).unwrap() as f64;
+                let expected = clip.len() as f64 * out / f64::from(src) / f64::from(pitch);
+                assert!((len / expected - 1.0).abs() < 0.002, "{len} vs {expected}");
+            }
+        }
     }
 
     fn max_step(x: &[f32]) -> f32 {

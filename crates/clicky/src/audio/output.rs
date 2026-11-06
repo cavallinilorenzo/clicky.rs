@@ -199,8 +199,13 @@ impl Output {
             }
         };
         let pre_roll = transport.pre_roll();
+        // A one-channel device gets only our left channel (AUHAL drops the rest).
+        let mono = self.unit.device_channels() == Some(1);
         // SAFETY: the unit is not running, so the IO thread does not use the state.
-        unsafe { (*self.state).prepare(rate, device::frames(pre_roll, rate)) };
+        unsafe {
+            (*self.state).prepare(rate, device::frames(pre_roll, rate));
+            (*self.state).mixer.set_mono(mono);
+        }
         // Best effort: without the listeners the watchdog still catches a dead device.
         let _ = hal::watch_device(device);
         if let Err(e) = self.unit.start() {
@@ -352,6 +357,16 @@ impl Unit {
     }
 
     fn device_side_rate(&self) -> Result<f64, OsError> {
+        let hw = self.device_side_format()?;
+        Ok(if hw.mSampleRate > 0.0 { hw.mSampleRate } else { FALLBACK_RATE })
+    }
+
+    /// The bound device's channel count (all its output streams together).
+    fn device_channels(&self) -> Option<u32> {
+        self.device_side_format().ok().map(|f| f.mChannelsPerFrame).filter(|&n| n > 0)
+    }
+
+    fn device_side_format(&self) -> Result<ffi::AudioStreamBasicDescription, OsError> {
         let mut hw = ffi::AudioStreamBasicDescription::default();
         let mut size = std::mem::size_of_val(&hw) as u32;
         // SAFETY: `hw` is a valid out-pointer of `size` bytes.
@@ -365,7 +380,7 @@ impl Unit {
                 &mut size,
             )
         })?;
-        Ok(if hw.mSampleRate > 0.0 { hw.mSampleRate } else { FALLBACK_RATE })
+        Ok(hw)
     }
 
     fn start(&self) -> Result<(), OsError> {
@@ -470,7 +485,7 @@ mod tests {
     const LEVEL: f32 = 0.5 * MASTER_GAIN;
 
     fn press() -> Play {
-        Play { samples: &CLIP, src_rate: 48_000, gain: 1.0 }
+        Play { samples: &CLIP, src_rate: 48_000, gain: 1.0, pan: 0.0, pitch: 1.0 }
     }
 
     fn render_state() -> (RenderState, Producer<Play>, &'static RenderSignals) {

@@ -5,9 +5,14 @@
 //!
 //! Scenarios: fast typing (20 keys/s), mashing (bursts of 6–12 keys), 10 keys
 //! held for 60 s (one press each: held keys do not repeat), and fast typing
-//! while the volume slider is dragged up and down.
+//! while the volume slider is dragged up and down. Every keystroke is a random
+//! key of the keyboard with Natural Variation and Spatial Stereo on, drawn
+//! with the voicer's own laws (`options::variation`, `options::key_pan`): its
+//! gain within ±1.5 dB, its pitch within ±35 cents and its pan by the key's
+//! position, so a voice is up to +3.5 dB on its near side. Fast typing also
+//! runs with both options off, where the two channels must be identical.
 //!
-//! Checks on every output sample:
+//! Checks on every output sample of both channels:
 //! - **Full scale**: no |sample| ≥ 1.0 (in fact none above the −1 dBFS ceiling).
 //! - **Discontinuities**: the test clips are keystroke-like but band-limited
 //!   (damped partials at 300 Hz–2 kHz), so the clean mix has nothing above
@@ -21,6 +26,7 @@
 
 use super::tests::play;
 use super::*;
+use crate::engine::options::{self, PAN_WIDTH};
 
 // Every sample at or below the ceiling is below full scale.
 const _: () = assert!(CEILING < 1.0);
@@ -100,11 +106,23 @@ fn clips(rate: u32) -> Vec<&'static [i16]> {
 /// whatever happens when it starts (a voice stolen for it) must be clean.
 const SILENT: usize = 12;
 
+/// One keystroke as the voicer sends it.
+#[derive(Clone, Copy)]
+struct Stroke {
+    gain: f32,
+    pan: f32,
+    pitch: f32,
+}
+
+impl Stroke {
+    const PLAIN: Stroke = Stroke { gain: 1.0, pan: 0.0, pitch: 1.0 };
+}
+
 /// Keystrokes and volume changes over time.
 #[derive(Default)]
 struct Script {
-    /// (time in seconds, clip index, voice gain)
-    presses: Vec<(f64, usize, f32)>,
+    /// (time in seconds, clip index, the keystroke's gain, pan and pitch)
+    presses: Vec<(f64, usize, Stroke)>,
     /// (time in seconds, slider position)
     volume: Vec<(f64, f64)>,
     seconds: f64,
@@ -112,7 +130,9 @@ struct Script {
 
 /// What a render produced, and where keystrokes started.
 struct Render {
+    /// The left channel.
     out: Vec<f32>,
+    right: Vec<f32>,
     onsets: Vec<usize>,
     rate: f64,
     /// Most voices sounding at once (stolen ones still fading included).
@@ -124,6 +144,7 @@ fn render(script: &Script, clips: &[&'static [i16]], pack_rate: u32, rate: f64) 
     let mut mixer = Mixer::new(rate);
     let total = (script.seconds * rate) as usize;
     let mut out = Vec::with_capacity(total);
+    let mut right = Vec::with_capacity(total);
     let mut onsets = Vec::new();
     let (mut next_press, mut next_volume) = (0, 0);
     let mut master = volume_gain(1.0);
@@ -134,10 +155,10 @@ fn render(script: &Script, clips: &[&'static [i16]], pack_rate: u32, rate: f64) 
         let frames = ((BLOCKS_AT_48K[block % BLOCKS_AT_48K.len()] as f64 * scale) as usize).max(1);
         block += 1;
         let now = out.len() as f64 / rate;
-        while let Some(&(at, clip, gain)) = script.presses.get(next_press)
+        while let Some(&(at, clip, Stroke { gain, pan, pitch })) = script.presses.get(next_press)
             && at <= now
         {
-            mixer.start(&play(clips[clip], pack_rate, gain));
+            mixer.start(&Play { pan, pitch, ..play(clips[clip], pack_rate, gain) });
             if clip != SILENT {
                 onsets.push(out.len());
             }
@@ -152,15 +173,25 @@ fn render(script: &Script, clips: &[&'static [i16]], pack_rate: u32, rate: f64) 
         most_voices = most_voices.max(mixer.voices());
         let (mut l, mut r) = (vec![0.0; frames], vec![0.0; frames]);
         mixer.render(&mut l, &mut r, master);
-        assert_eq!(l, r);
         out.extend_from_slice(&l);
+        right.extend_from_slice(&r);
     }
-    Render { out, onsets, rate, most_voices }
+    Render { out, right, onsets, rate, most_voices }
 }
 
-/// Voice gains up to +2 dB, leaving room for #8's variation and panning.
-fn gain(rng: &mut Rng) -> f32 {
-    (1.0 + 0.26 * rng.unit()) as f32
+/// A keystroke on a random key with Natural Variation and Spatial Stereo on.
+fn stroke(rng: &mut Rng) -> Stroke {
+    let keys = clicky_pack::keys::KEYS;
+    let key = keys[rng.below(keys.len())].code;
+    let (gain, pitch) = options::variation(rng.unit() as f32, rng.unit() as f32);
+    Stroke { gain, pan: options::key_pan(u16::from(key)), pitch }
+}
+
+/// The loudest keystroke there can be: +1.5 dB, panned as far as it goes.
+fn loudest(rng: &mut Rng) -> Stroke {
+    let (gain, pitch) = options::variation(1.0, rng.unit() as f32);
+    let pan = if rng.below(2) == 0 { -PAN_WIDTH } else { PAN_WIDTH };
+    Stroke { gain, pan, pitch }
 }
 
 fn fast_typing(seconds: f64, seed: u64) -> Script {
@@ -168,7 +199,7 @@ fn fast_typing(seconds: f64, seed: u64) -> Script {
     let mut script = Script { seconds, ..Script::default() };
     let mut t = 0.01;
     while t < seconds - 0.5 {
-        script.presses.push((t, rng.below(12), gain(&mut rng)));
+        script.presses.push((t, rng.below(12), stroke(&mut rng)));
         t += 0.03 + 0.04 * rng.unit(); // 20 keys/s on average, as fast as anyone types
     }
     script
@@ -180,7 +211,7 @@ fn mashing(seconds: f64) -> Script {
     let mut t = 0.01;
     while t < seconds - 1.5 {
         for _ in 0..6 + rng.below(7) {
-            script.presses.push((t + 0.02 * rng.unit(), rng.below(12), gain(&mut rng)));
+            script.presses.push((t + 0.02 * rng.unit(), rng.below(12), stroke(&mut rng)));
         }
         t += 0.08 + 0.1 * rng.unit();
     }
@@ -188,13 +219,20 @@ fn mashing(seconds: f64) -> Script {
     script
 }
 
+/// The same keystrokes with Natural Variation and Spatial Stereo off.
+fn plain(mut script: Script) -> Script {
+    script.presses.iter_mut().for_each(|p| p.2 = Stroke::PLAIN);
+    script
+}
+
 fn ten_keys_held(seconds: f64) -> Script {
     let mut rng = Rng(7);
     let mut script = Script { seconds, ..Script::default() };
-    // Ten keys going down within 30 ms, the long clip among them, then held.
-    script.presses.push((0.01, 0, 1.26));
+    // Ten keys going down within 30 ms, the long clip among them (as loud
+    // as a keystroke gets), then held.
+    script.presses.push((0.01, 0, loudest(&mut rng)));
     for _ in 0..9 {
-        script.presses.push((0.01 + 0.03 * rng.unit(), 1 + rng.below(11), gain(&mut rng)));
+        script.presses.push((0.01 + 0.03 * rng.unit(), 1 + rng.below(11), stroke(&mut rng)));
     }
     script.presses.sort_by(|a, b| a.0.total_cmp(&b.0));
     script
@@ -206,11 +244,11 @@ fn steal_storm(seconds: f64) -> Script {
     let mut rng = Rng(11);
     let mut script = Script { seconds, ..Script::default() };
     for k in 0..MAX_VOICES {
-        script.presses.push((0.01 + 0.008 * k as f64, rng.below(3), gain(&mut rng)));
+        script.presses.push((0.01 + 0.008 * k as f64, rng.below(3), loudest(&mut rng)));
     }
     let mut t = 0.3;
     while t < seconds - 0.2 {
-        script.presses.push((t, SILENT, 1.0));
+        script.presses.push((t, SILENT, stroke(&mut rng)));
         t += 0.004 + 0.02 * rng.unit();
     }
     script
@@ -250,9 +288,15 @@ fn high_pass(x: &[f32], rate: f64) -> Vec<f64> {
     y
 }
 
-/// The largest high-passed value outside onset windows, and where.
+/// The largest high-passed value outside onset windows, and where, of either channel.
 fn worst_click(render: &Render) -> (f64, usize) {
-    let hp = high_pass(&render.out, render.rate);
+    let left = worst_click_in(&render.out, render);
+    let right = worst_click_in(&render.right, render);
+    if right.0 > left.0 { right } else { left }
+}
+
+fn worst_click_in(out: &[f32], render: &Render) -> (f64, usize) {
+    let hp = high_pass(out, render.rate);
     let window = (ONSET_WINDOW_SECS * render.rate) as usize;
     let mut onset = render.onsets.iter().peekable();
     let mut exempt_until = 0;
@@ -281,7 +325,7 @@ fn check(name: &str, script: &Script) {
         let clips = clips(pack_rate);
         for rate in DEVICE_RATES {
             let r = render(script, &clips, pack_rate, rate);
-            let peak = peak(&r.out);
+            let peak = peak(&r.out).max(peak(&r.right));
             let (click, at) = worst_click(&r);
             println!(
                 "{name}, pack {pack_rate} Hz, device {rate} Hz: peak {:.2} dBFS, \
@@ -303,6 +347,24 @@ fn check(name: &str, script: &Script) {
 #[test]
 fn fast_typing_at_maximum_volume_is_clean() {
     check("fast typing", &fast_typing(4.0, 1));
+}
+
+#[test]
+fn fast_typing_without_variation_or_panning_is_clean_and_centred() {
+    let script = plain(fast_typing(4.0, 1));
+    check("fast typing, options off", &script);
+    let clips = clips(44_100);
+    let r = render(&script, &clips, 44_100, 48_000.0);
+    assert_eq!(r.out, r.right, "both channels are identical");
+}
+
+/// Panning really spreads the stress mix: the channels differ.
+#[test]
+fn the_stress_mix_is_stereo() {
+    let clips = clips(48_000);
+    let r = render(&fast_typing(1.5, 2), &clips, 48_000, 48_000.0);
+    let diff = r.out.iter().zip(&r.right).map(|(l, r)| (l - r).abs()).fold(0.0, f32::max);
+    assert!(diff > 0.05, "{diff}");
 }
 
 #[test]
@@ -331,7 +393,7 @@ fn mashing_overloads_the_mix() {
     let clips = clips(48_000);
     let script = mashing(4.0);
     let r = render(&script, &clips, 48_000, 48_000.0);
-    assert!(peak(&r.out) > CEILING * 0.99, "the limiter is reached");
+    assert!(peak(&r.out).max(peak(&r.right)) > CEILING * 0.99, "the limiter is reached");
     assert!(r.most_voices > MAX_VOICES, "voices are stolen ({} at once)", r.most_voices);
 }
 
@@ -360,7 +422,7 @@ fn a_volume_sweep_never_steps_faster_than_the_ramp() {
             // A held level (DC) shows the gain directly.
             let clip: &'static [i16] = Box::leak(vec![8_192i16; 3 * pack_rate as usize].into());
             let mut script = Script { seconds: 2.0, ..Script::default() };
-            script.presses.push((0.0, 0, 1.0));
+            script.presses.push((0.0, 0, Stroke::PLAIN));
             let mut rng = Rng(5);
             let mut t = 0.1;
             while t < 2.0 {
