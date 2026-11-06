@@ -4,6 +4,7 @@ mod bundle;
 mod catalog;
 mod decode;
 mod dsp;
+mod loudness;
 mod packs;
 mod sign;
 mod sources;

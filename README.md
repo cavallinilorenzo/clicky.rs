@@ -52,7 +52,28 @@ appends audio start/stop (with the time to the first render), input state and
 errors to `~/Library/Logs/Clicky/Clicky.log`. It never records keys or
 characters.
 
+## Soundpacks and credits
+
+Clicky ships 21 soundpacks, grouped in the menu by switch type:
+
+- **Linear**: Cherry MX Black (ABS, PBT), Cherry MX Red (ABS, PBT), Gateron
+  Black Ink, Gateron Red Ink, NovelKeys Cream, Alpaca, Turquoise Tealios.
+- **Tactile**: Cherry MX Brown (ABS, PBT), Holy Panda, Topre, Topre Purple
+  Hybrid (PBT), Everglide Crystal Purple, Everglide Oreo.
+- **Clicky**: Cherry MX Blue (ABS, PBT), Kailh Box Navy, SKCM Blue Alps,
+  Buckling Spring.
+
+The recordings come from [Mechvibes](https://github.com/hainguyents13/mechvibes-electron)
+by Hai Nguyen (commit `326252a13e7bef4f1c35d08ef0189b5af6f8ba02`) and
+[kbsim](https://github.com/tplai/kbsim) by Thomas Lai (commit
+`ba103f3b0afa9dab80447aa2e7e2ed80b6bd80e4`), both MIT. Much of Clicky's code is
+derived from [Rustyvibes 2](https://github.com/KunalBagaria/rustyvibes-v2) by
+Kunal Bagaria, MIT. The source audio is committed unmodified in
+`assets/soundpacks/` (see `SOURCES.md` there); `cargo xtask packs` converts it
+and matches every pack's loudness. **About Clicky** in the menu shows the
+version and these credits; the full licences are in `THIRD_PARTY_NOTICES.md`
+and, in the app, `Contents/Resources/Licenses`.
+
 ## Layout
 
-See `docs/architecture.md`. Soundpack source audio and its licences are in
-`assets/soundpacks/`; credits are in `THIRD_PARTY_NOTICES.md`.
+See `docs/architecture.md`.

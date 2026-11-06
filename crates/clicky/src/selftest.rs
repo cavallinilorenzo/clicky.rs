@@ -1,8 +1,9 @@
 //! `Clicky --self-test [--audible]`: drives the real audio path (voicer → ring
 //! → lifecycle → CoreAudio output → render callback) with synthetic key presses,
 //! without the key listener or the menu, so it needs no permission. It checks
-//! a cold start, the hold window going cold, and a second cold start, and
-//! mirrors the diagnostics log to stderr. Inaudible unless `--audible`.
+//! a cold start, a rebuild while warm (as after a device change), the hold
+//! window going cold, and a second cold start, and mirrors the diagnostics log
+//! to stderr. Inaudible unless `--audible`.
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -50,6 +51,21 @@ pub fn run(audible: bool) -> Result<(), String> {
             first_render.saturating_duration_since(pressed).as_secs_f64() * 1e3
         );
         std::thread::sleep(Duration::from_millis(100));
+        if round == 1 {
+            // A rebuild while warm, with a press arriving while it runs.
+            let rebuilds = audio::rebuilds();
+            let requested = Instant::now();
+            audio::request_rebuild();
+            voicer.press(u16::from(code::S));
+            wait_for("the warm output to be rebuilt", Duration::from_secs(3), || {
+                audio::rebuilds() > rebuilds && shared.first_render().is_some()
+            })?;
+            let first_render = shared.first_render().unwrap_or(requested);
+            println!(
+                "round {round}: rebuilt while warm, request to first render {:.1} ms",
+                first_render.saturating_duration_since(requested).as_secs_f64() * 1e3
+            );
+        }
         voicer.press(u16::from(code::SPACE));
         wait_for("the hold window to elapse", HOLD + Duration::from_secs(3), || {
             !shared.warm.load(Ordering::SeqCst)

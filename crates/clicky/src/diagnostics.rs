@@ -71,13 +71,29 @@ pub enum Event {
     UnrecognisedInput {
         kind: &'static str,
     },
+    /// Why and where the output (re)started; logged just before its
+    /// [`Event::AudioStarted`] timings. `device` is a CoreAudio object id.
+    AudioStartedOn {
+        cause: &'static str,
+        rebuild: bool,
+        device: u32,
+        transport: &'static str,
+        buffer_frames: Option<u32>,
+        pre_roll_ms: f64,
+    },
+    /// Something that may need the output rebuilt (a device change, sleep,
+    /// wake), and the output's state when it arrived.
+    AudioTrigger {
+        trigger: &'static str,
+        state: &'static str,
+    },
     /// Input Monitoring was turned off while Clicky was listening.
     InputPermissionRevoked,
     /// Input Monitoring was granted, but the tap needs a relaunch.
     InputNeedsRelaunch,
     /// Clicky is relaunching itself (from the first-run window or the menu).
     Relaunching,
-    /// Launch at Login after a change or a menu check. `status` is a fixed description.
+    /// Launch at Login after a change. `status` is a fixed description.
     LaunchAtLogin {
         status: &'static str,
     },
@@ -115,6 +131,29 @@ impl fmt::Display for Event {
             Event::Error { context, detail } => write!(f, "error: {context}: {detail}"),
             Event::UnrecognisedInput { kind } => {
                 write!(f, "input: saw {kind}; it plays a fallback sound (logged once per launch)")
+            }
+            Event::AudioStartedOn {
+                cause,
+                rebuild,
+                device,
+                transport,
+                buffer_frames,
+                pre_roll_ms,
+            } => {
+                let verb = if *rebuild { "rebuilt" } else { "starting" };
+                write!(f, "audio: {verb} ({cause}) on device {device} ({transport}), ")?;
+                match buffer_frames {
+                    Some(frames) => write!(f, "IO buffer {frames} frames, ")?,
+                    None => write!(f, "IO buffer unknown, ")?,
+                }
+                if *pre_roll_ms > 0.0 {
+                    write!(f, "pre-roll {pre_roll_ms:.0} ms")
+                } else {
+                    write!(f, "no pre-roll")
+                }
+            }
+            Event::AudioTrigger { trigger, state } => {
+                write!(f, "audio: {trigger} (output {state})")
             }
             Event::InputPermissionRevoked => {
                 write!(f, "input: Input Monitoring permission revoked; tap removed, retrying")
@@ -313,6 +352,41 @@ mod tests {
     }
 
     #[test]
+    fn a_start_records_its_cause_and_device() {
+        let start = Event::AudioStartedOn {
+            cause: "key press",
+            rebuild: false,
+            device: 73,
+            transport: "built-in",
+            buffer_frames: Some(128),
+            pre_roll_ms: 0.0,
+        };
+        assert_eq!(
+            start.to_string(),
+            "audio: starting (key press) on device 73 (built-in), IO buffer 128 frames, no pre-roll"
+        );
+        let rebuild = Event::AudioStartedOn {
+            cause: "default output changed",
+            rebuild: true,
+            device: 80,
+            transport: "Bluetooth",
+            buffer_frames: None,
+            pre_roll_ms: 250.0,
+        };
+        assert_eq!(
+            rebuild.to_string(),
+            "audio: rebuilt (default output changed) on device 80 (Bluetooth), \
+             IO buffer unknown, pre-roll 250 ms"
+        );
+    }
+
+    #[test]
+    fn a_trigger_records_the_state_it_found() {
+        let event = Event::AudioTrigger { trigger: "sample rate changed", state: "warm" };
+        assert_eq!(event.to_string(), "audio: sample rate changed (output warm)");
+    }
+
+    #[test]
     fn permission_and_login_events_read_plainly() {
         assert_eq!(
             Event::InputPermissionRevoked.to_string(),
@@ -323,7 +397,7 @@ mod tests {
             "input: Input Monitoring granted; the tap needs a relaunch"
         );
         assert_eq!(Event::Relaunching.to_string(), "app: relaunching");
-        assert_eq!(Event::LaunchAtLogin { status: "enabled" }.to_string(), "login item: enabled");
+        assert_eq!(Event::LaunchAtLogin { status: "on" }.to_string(), "login item: on");
     }
 
     #[test]

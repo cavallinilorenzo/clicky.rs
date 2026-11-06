@@ -1,4 +1,5 @@
-//! Minimal AudioToolbox and CoreAudio FFI for an AUHAL default-output unit.
+//! Minimal AudioToolbox and CoreAudio FFI for an AUHAL output unit and the
+//! HAL device properties and listeners the output lifecycle needs.
 //!
 //! Derived from Rustyvibes 2 (MIT, © 2021–2026 Kunal Bagaria,
 //! https://github.com/KunalBagaria/rustyvibes-v2), `crates/rustyvibes/src/audio/ffi.rs`.
@@ -75,7 +76,7 @@ const fn fourcc(code: &[u8; 4]) -> u32 {
 }
 
 pub const kAudioUnitType_Output: u32 = fourcc(b"auou");
-pub const kAudioUnitSubType_DefaultOutput: u32 = fourcc(b"def ");
+pub const kAudioUnitSubType_HALOutput: u32 = fourcc(b"ahal");
 pub const kAudioUnitManufacturer_Apple: u32 = fourcc(b"appl");
 pub const kAudioFormatLinearPCM: u32 = fourcc(b"lpcm");
 pub const kAudioFormatFlagIsFloat: u32 = 1 << 0;
@@ -88,6 +89,7 @@ pub const kAudioUnitScope_Global: u32 = 0;
 pub const kAudioUnitScope_Input: u32 = 1;
 pub const kAudioUnitScope_Output: u32 = 2;
 pub const kAudioUnitRenderAction_OutputIsSilence: u32 = 1 << 4;
+pub const kAudioOutputUnitProperty_CurrentDevice: u32 = 2000;
 
 #[link(name = "AudioToolbox", kind = "framework")]
 unsafe extern "C" {
@@ -129,10 +131,34 @@ pub struct AudioObjectPropertyAddress {
     pub mElement: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AudioValueRange {
+    pub mMinimum: f64,
+    pub mMaximum: f64,
+}
+
+pub type AudioObjectPropertyListenerProc = unsafe extern "C" fn(
+    AudioObjectID,
+    u32,
+    *const AudioObjectPropertyAddress,
+    *mut c_void,
+) -> OSStatus;
+
+pub const kAudioObjectUnknown: AudioObjectID = 0;
 pub const kAudioObjectSystemObject: AudioObjectID = 1;
 pub const kAudioObjectPropertyScopeGlobal: u32 = fourcc(b"glob");
+pub const kAudioObjectPropertyScopeOutput: u32 = fourcc(b"outp");
 pub const kAudioObjectPropertyElementMain: u32 = 0;
 pub const kAudioHardwarePropertySleepingIsAllowed: u32 = fourcc(b"slep");
+pub const kAudioHardwarePropertyDefaultOutputDevice: u32 = fourcc(b"dOut");
+pub const kAudioHardwarePropertyDevices: u32 = fourcc(b"dev#");
+pub const kAudioDevicePropertyDeviceIsAlive: u32 = fourcc(b"livn");
+pub const kAudioDevicePropertyNominalSampleRate: u32 = fourcc(b"nsrt");
+pub const kAudioDevicePropertyStreamFormat: u32 = fourcc(b"sfmt");
+pub const kAudioDevicePropertyTransportType: u32 = fourcc(b"tran");
+pub const kAudioDevicePropertyBufferFrameSize: u32 = fourcc(b"fsiz");
+pub const kAudioDevicePropertyBufferFrameSizeRange: u32 = fourcc(b"fsz#");
 
 #[link(name = "CoreAudio", kind = "framework")]
 unsafe extern "C" {
@@ -143,6 +169,26 @@ unsafe extern "C" {
         qualifier: *const c_void,
         data_size: u32,
         data: *const c_void,
+    ) -> OSStatus;
+    pub fn AudioObjectGetPropertyData(
+        object: AudioObjectID,
+        address: *const AudioObjectPropertyAddress,
+        qualifier_size: u32,
+        qualifier: *const c_void,
+        data_size: *mut u32,
+        data: *mut c_void,
+    ) -> OSStatus;
+    pub fn AudioObjectAddPropertyListener(
+        object: AudioObjectID,
+        address: *const AudioObjectPropertyAddress,
+        listener: AudioObjectPropertyListenerProc,
+        client: *mut c_void,
+    ) -> OSStatus;
+    pub fn AudioObjectRemovePropertyListener(
+        object: AudioObjectID,
+        address: *const AudioObjectPropertyAddress,
+        listener: AudioObjectPropertyListenerProc,
+        client: *mut c_void,
     ) -> OSStatus;
 }
 
@@ -159,5 +205,14 @@ mod tests {
         assert_eq!(kAudioUnitType_Output, 0x6175_6F75);
         assert_eq!(std::mem::size_of::<AudioObjectPropertyAddress>(), 12);
         assert_eq!(kAudioHardwarePropertySleepingIsAllowed, 0x736C_6570);
+        assert_eq!(std::mem::size_of::<AudioValueRange>(), 16);
+        // Values from AudioHardware.h / AudioHardwareBase.h / AudioUnitProperties.h.
+        assert_eq!(kAudioUnitSubType_HALOutput, 0x6168_616C);
+        assert_eq!(kAudioHardwarePropertyDefaultOutputDevice, 0x644F_7574);
+        assert_eq!(kAudioHardwarePropertyDevices, 0x6465_7623);
+        assert_eq!(kAudioDevicePropertyDeviceIsAlive, 0x6C69_766E);
+        assert_eq!(kAudioDevicePropertyNominalSampleRate, 0x6E73_7274);
+        assert_eq!(kAudioDevicePropertyBufferFrameSize, 0x6673_697A);
+        assert_eq!(kAudioObjectPropertyScopeOutput, 0x6F75_7470);
     }
 }
