@@ -97,7 +97,7 @@ input (CGEventTap, listen-only)            │
 | `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`; hops input status changes to the main queue. | |
 | `ui/onboarding.rs` | The first-run window: `Model` (when it shows and which step: explain / granted / relaunch), the window, opening Input Monitoring settings, `relaunch`. | yes (model) |
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
-| `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). | yes (state) |
+| `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). Needs permission wins over off: the icon flags what must be fixed, and the menu still shows the switch's state. | yes (state) |
 | `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order; `describe` prints the built menu for `--menu`. | yes (`tests/menu_order.rs` runs `--menu`) |
 | `ui/menu/sound_switch.rs`, `soundpack.rs`, `volume.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
 | `ui/menu/options.rs` | Key Release Sounds, Natural Variation, Spatial Stereo checkboxes after the volume slider; Key Release Sounds greyed out with "This soundpack has no release sounds" (subtitle on macOS 14.4+, note row before; tooltip) for packs without them (`Entry::has_release`), refreshed on each menu open. | yes (`view`, `SoundOption::set`) |

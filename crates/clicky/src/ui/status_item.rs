@@ -23,7 +23,12 @@ pub enum Icon {
 }
 
 impl Icon {
-    /// The missing permission wins: the switch cannot make sounds without it.
+    /// The missing permission wins, even when sounds are switched off. On
+    /// purpose: the switch cannot make sounds without the permission, and the
+    /// icon is where the user first sees that something needs fixing (spec:
+    /// say so instead of silently making no sound). The cost: with sounds off
+    /// and no permission, the icon does not show "off". The menu still shows
+    /// the switch's real state below the permission rows.
     pub fn for_state(sounds_on: bool, needs_permission: bool) -> Icon {
         match (needs_permission, sounds_on) {
             (true, _) => Icon::NeedsPermission,
