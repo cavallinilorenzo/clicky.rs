@@ -1,6 +1,6 @@
-//! The permission rows: shown only while sounds are unavailable for lack of
-//! Input Monitoring, saying so and offering the fix. Refreshed each time the
-//! menu opens.
+//! The permission rows, at the top of the menu: shown only while sounds are
+//! unavailable for lack of Input Monitoring, saying so and offering the fix.
+//! Refreshed each time the menu opens.
 
 use std::rc::Rc;
 
@@ -57,12 +57,13 @@ pub fn rows(status: Status) -> Option<Rows> {
     }
 }
 
+/// Adds the rows at the top of the menu, with a separator below them.
 pub fn add(menu: &mut MenuBuilder) {
-    let separator = menu.separator();
     let headline = info_item(menu);
     let hint = info_item(menu);
     let ui = menu.ui().clone();
     let fix = menu.item("", move |_| run_fix(&ui));
+    let separator = menu.separator();
 
     let show = move || {
         let rows = rows(permission::status());

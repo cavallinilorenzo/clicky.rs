@@ -46,12 +46,14 @@ impl Menu {
 /// at the marked places.
 pub fn build(ui: &Rc<Ui>) -> Menu {
     let mut menu = MenuBuilder::new(ui);
+    // The permission rows (only while sounds are unavailable) lead the menu,
+    // so nothing comes between the nine sections of issue #2.
+    permission::add(&mut menu); // #9
     sound_switch::add(&mut menu);
     soundpack::add(&mut menu); // #7: soundpack picker
     volume::add(&mut menu); // #6: volume slider
     options::add(&mut menu); // #8: Key Release Sounds, Natural Variation, Spatial Stereo
     launch_at_login::add(&mut menu); // #9: Launch at Login
-    permission::add(&mut menu); // #9: the permission rows (only while sounds are unavailable)
     about::add(&mut menu); // #7: About
     diagnostics::add(&mut menu);
     quit::add(&mut menu);

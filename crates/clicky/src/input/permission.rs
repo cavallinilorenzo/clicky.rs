@@ -156,7 +156,9 @@ pub fn observe(on_change: fn()) {
 }
 
 /// Stores `status`; returns whether it changed (and then calls the observer).
-pub(super) fn publish(status: Status) -> bool {
+/// The tap thread's supervisor publishes; `--menu --needs-permission` also
+/// does, to print the menu in that state without asking the system.
+pub(crate) fn publish(status: Status) -> bool {
     let changed = STATUS.swap(encode(status), Ordering::AcqRel) != encode(status);
     if changed && let Some(on_change) = OBSERVER.get() {
         on_change();

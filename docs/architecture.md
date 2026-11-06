@@ -67,7 +67,7 @@ input (CGEventTap, listen-only)            │
 
 | Module | What it does | Pure / tested |
 |---|---|---|
-| `main.rs` | Arguments (`--version`, `--self-test`, `--bench-typing`, `--menu`), then `app::run`. | |
+| `main.rs` | Arguments (`--version`, `--self-test`, `--bench-typing`, `--menu [--needs-permission]`), then `app::run`. | |
 | `app.rs` | Launch wiring: settings (`restored`: on/off, volume, sound options), sleep policy, soundpack, audio, input, UI. | yes (`restored`, across a real relaunch) |
 | `settings.rs` | Typed `Setting<T>` + `Store` over `NSUserDefaults` (in-memory backend for tests). Each feature declares its own `Setting` const next to its code. | yes |
 | `diagnostics.rs` | The optional log: the `Event` enum (no key data, by construction), line formatting, the file logger. `LOG_ENABLED` setting. | yes |
@@ -102,7 +102,7 @@ input (CGEventTap, listen-only)            │
 | `ui/menu/sound_switch.rs`, `soundpack.rs`, `volume.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
 | `ui/menu/options.rs` | Key Release Sounds, Natural Variation, Spatial Stereo checkboxes after the volume slider; Key Release Sounds greyed out with "This soundpack has no release sounds" (subtitle on macOS 14.4+, note row before; tooltip) for packs without them (`Entry::has_release`), refreshed on each menu open. | yes (`view`, `SoundOption::set`) |
 | `ui/menu/launch_at_login.rs` | "Launch at Login" over `SMAppService.mainAppService`, behind the `LoginItem` seam; reads the real state on each menu open. | yes (toggle, view) |
-| `ui/menu/permission.rs` | The rows shown while sounds are unavailable for lack of permission, with the fix. | yes (rows) |
+| `ui/menu/permission.rs` | The rows shown at the top of the menu, above the switch, while sounds are unavailable for lack of permission, with the fix. | yes (rows; `tests/menu_order.rs` via `--menu --needs-permission`) |
 
 `crates/xtask/src`: `catalog.rs` (which packs ship, in menu order), `sources/` (one adapter per
 source layout: `mechvibes.rs`, `kbsim.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),

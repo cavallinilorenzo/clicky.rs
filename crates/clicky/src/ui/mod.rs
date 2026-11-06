@@ -53,8 +53,13 @@ pub fn run(shared: &'static Shared, store: Store) {
 
 /// `Clicky --menu`: builds the real menu, as at launch, without running the
 /// app, and prints it ([`menu::describe`]). Writes no setting and listens to
-/// no key. For tests and the verifier.
-pub fn print_menu() {
+/// no key. For tests and the verifier. With `needs_permission` it prints the
+/// menu as when Input Monitoring is missing, without reading or asking for
+/// the real permission.
+pub fn print_menu(needs_permission: bool) {
+    if needs_permission {
+        permission::publish(permission::Status::Missing);
+    }
     let mtm = MainThreadMarker::new().expect("Clicky must start on the main thread");
     NSApplication::sharedApplication(mtm)
         .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
