@@ -3,12 +3,11 @@
 use std::process::Command;
 
 /// The menu's sections in the order issue #2 asks for.
-const ORDER: [&str; 9] = [
+const ORDER: [&str; 8] = [
     "on/off switch",
     "soundpack picker",
     "volume slider",
     "Key Release Sounds",
-    "Natural Variation",
     "Spatial Stereo",
     "Launch at Login",
     "About",
@@ -40,14 +39,13 @@ fn menu_with(args: &[&str]) -> Vec<Row> {
         .collect()
 }
 
-/// The section a row belongs to, if it is one of the nine.
+/// The section a row belongs to, if it is one of the eight.
 fn section(text: &str) -> Option<&'static str> {
     Some(match text {
         "<switch>" => "on/off switch",
         "<submenu>" => "soundpack picker",
         "<slider>" => "volume slider",
         "Key Release Sounds" => "Key Release Sounds",
-        "Natural Variation" => "Natural Variation",
         "Spatial Stereo" => "Spatial Stereo",
         "Launch at Login" => "Launch at Login",
         "About Clicky" => "About",
@@ -71,7 +69,7 @@ fn the_visible_menu_is_in_the_order_of_the_spec() {
     assert_eq!(visible[picker - 1], "Soundpack");
     let unexpected: Vec<&&str> =
         visible.iter().filter(|t| section(t).is_none() && **t != "Soundpack").collect();
-    assert!(unexpected.is_empty(), "rows outside the nine sections: {unexpected:?}");
+    assert!(unexpected.is_empty(), "rows outside the eight sections: {unexpected:?}");
 }
 
 /// The permission rows, shown above the switch only while sounds are unavailable.
@@ -83,7 +81,7 @@ const PERMISSION_ROWS: [&str; 3] = [
 
 /// Rows shown only sometimes (the permission rows, the Option-held
 /// Diagnostics Log, the notes under Key Release Sounds and Launch at Login)
-/// stay outside the nine: only the permission rows (and their separator)
+/// stay outside the eight: only the permission rows (and their separator)
 /// come before the switch, nothing after Quit, and the Diagnostics Log
 /// between About and Quit.
 #[test]
@@ -102,7 +100,7 @@ fn rows_shown_only_sometimes_keep_the_order() {
         "only the hidden permission rows come before the switch: {:?}",
         above.iter().map(|r| &r.text).collect::<Vec<_>>()
     );
-    assert_eq!(anchors[8], rows.len() - 1, "Quit comes last");
+    assert_eq!(anchors[7], rows.len() - 1, "Quit comes last");
     let diagnostics = rows.iter().position(|row| row.text == "Diagnostics Log").unwrap();
     assert!(rows[diagnostics].hidden, "only shown with Option held");
     assert!(at("About") < diagnostics && diagnostics < at("Quit"));
@@ -112,11 +110,11 @@ fn rows_shown_only_sometimes_keep_the_order() {
 }
 
 /// Without Input Monitoring, the permission rows lead the menu, above the
-/// switch, and the nine sections keep their order with nothing between them.
+/// switch, and the eight sections keep their order with nothing between them.
 /// (`--needs-permission` only pretends the permission is missing; it never
 /// reads or changes the real permission.)
 #[test]
-fn without_permission_the_fix_comes_first_and_the_nine_keep_their_order() {
+fn without_permission_the_fix_comes_first_and_the_eight_keep_their_order() {
     let rows = menu_with(&["--needs-permission"]);
     let visible: Vec<&str> = rows
         .iter()
@@ -130,7 +128,7 @@ fn without_permission_the_fix_comes_first_and_the_nine_keep_their_order() {
     assert_eq!(sections, ORDER, "visible rows: {visible:?}");
     let unexpected: Vec<&&str> =
         below.iter().filter(|t| section(t).is_none() && **t != "Soundpack").collect();
-    assert!(unexpected.is_empty(), "rows among the nine sections: {unexpected:?}");
+    assert!(unexpected.is_empty(), "rows among the eight sections: {unexpected:?}");
     let first_separator = rows.iter().position(|row| row.text == "---").unwrap();
     assert!(
         first_separator < rows.iter().position(|row| row.text == "<switch>").unwrap(),
