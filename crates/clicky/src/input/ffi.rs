@@ -43,15 +43,16 @@ unsafe extern "C" {
         user_info: *mut c_void,
     ) -> CFMachPortRef;
     pub fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    pub fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
     pub fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
     /// The modifier flags (which modifier keys are down). No characters.
     pub fn CGEventGetFlags(event: CGEventRef) -> u64;
-    pub fn CGRequestListenEventAccess() -> bool;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     pub static kCFRunLoopCommonModes: CFStringRef;
+    pub static kCFRunLoopDefaultMode: CFStringRef;
     pub fn CFMachPortCreateRunLoopSource(
         allocator: *const c_void,
         port: CFMachPortRef,
@@ -63,5 +64,13 @@ unsafe extern "C" {
         source: CFRunLoopSourceRef,
         mode: CFStringRef,
     );
-    pub fn CFRunLoopRun();
+    pub fn CFRunLoopRemoveSource(
+        run_loop: CFRunLoopRef,
+        source: CFRunLoopSourceRef,
+        mode: CFStringRef,
+    );
+    /// Runs the current run loop for up to `seconds`; returns why it stopped.
+    pub fn CFRunLoopRunInMode(mode: CFStringRef, seconds: f64, return_after_source: bool) -> i32;
+    pub fn CFMachPortInvalidate(port: CFMachPortRef);
+    pub fn CFRelease(object: *const c_void);
 }

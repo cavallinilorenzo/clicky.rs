@@ -87,6 +87,16 @@ pub enum Event {
         trigger: &'static str,
         state: &'static str,
     },
+    /// Input Monitoring was turned off while Clicky was listening.
+    InputPermissionRevoked,
+    /// Input Monitoring was granted, but the tap needs a relaunch.
+    InputNeedsRelaunch,
+    /// Clicky is relaunching itself (from the first-run window or the menu).
+    Relaunching,
+    /// Launch at Login after a change. `status` is a fixed description.
+    LaunchAtLogin {
+        status: &'static str,
+    },
 }
 
 impl fmt::Display for Event {
@@ -145,6 +155,14 @@ impl fmt::Display for Event {
             Event::AudioTrigger { trigger, state } => {
                 write!(f, "audio: {trigger} (output {state})")
             }
+            Event::InputPermissionRevoked => {
+                write!(f, "input: Input Monitoring permission revoked; tap removed, retrying")
+            }
+            Event::InputNeedsRelaunch => {
+                write!(f, "input: Input Monitoring granted; the tap needs a relaunch")
+            }
+            Event::Relaunching => write!(f, "app: relaunching"),
+            Event::LaunchAtLogin { status } => write!(f, "login item: {status}"),
         }
     }
 }
@@ -366,6 +384,20 @@ mod tests {
     fn a_trigger_records_the_state_it_found() {
         let event = Event::AudioTrigger { trigger: "sample rate changed", state: "warm" };
         assert_eq!(event.to_string(), "audio: sample rate changed (output warm)");
+    }
+
+    #[test]
+    fn permission_and_login_events_read_plainly() {
+        assert_eq!(
+            Event::InputPermissionRevoked.to_string(),
+            "input: Input Monitoring permission revoked; tap removed, retrying"
+        );
+        assert_eq!(
+            Event::InputNeedsRelaunch.to_string(),
+            "input: Input Monitoring granted; the tap needs a relaunch"
+        );
+        assert_eq!(Event::Relaunching.to_string(), "app: relaunching");
+        assert_eq!(Event::LaunchAtLogin { status: "on" }.to_string(), "login item: on");
     }
 
     #[test]

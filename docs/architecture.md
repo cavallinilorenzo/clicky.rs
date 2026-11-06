@@ -28,6 +28,12 @@ input (CGEventTap, listen-only)            │
   is a physical press (one per press, never auto-repeat) or release;
   `Voicer` picks the clip through `keys::press_clip` and pushes a `Play` into
   the lock-free ring. It never blocks: a full ring drops the press and counts it.
+  The same thread supervises the Input Monitoring permission
+  (`input::permission::Supervisor`): every second while there is no tap, every
+  3 s while listening, it checks the permission (`IOHIDCheckAccess`, no prompt)
+  and the tap, creates, drops or recreates the tap, and publishes a `Status`
+  (missing / listening / revoked / needs relaunch). Each change is posted to the
+  main queue, where the status icon and the first-run window follow it.
 - The **render callback** drains the ring into the `Mixer` and renders. No locks,
   no allocation, no logging. It records the first render after each start.
 - The **audio control thread** owns the output. It sleeps while cold. A key press
@@ -67,14 +73,18 @@ input (CGEventTap, listen-only)            │
 | `audio/power.rs` | `NSWorkspace` will-sleep / did-wake observers. | |
 | `audio/output.rs` | CoreAudio adapter: AUHAL unit bound to the current default device at its current rate, render callback with pre-roll and fade-out, rebuild. | yes (render state) |
 | `audio/ffi.rs`, `input/ffi.rs` | Hand-written FFI (AudioToolbox, CoreAudio, CoreGraphics, CoreFoundation). | layout tests |
-| `input/mod.rs` | The listen-only event tap thread (key down/up, flags-changed, system-defined) and its minimal permission retry. | |
+| `input/mod.rs` | The listen-only event tap thread (key down/up, flags-changed, system-defined); creates, drops and recreates the tap as `permission::Supervisor` says. | |
+| `input/permission.rs` | Input Monitoring: `check` (`IOHIDCheckAccess`), `request` (from a click only), `Supervisor` (permission × tap → action and `Status`), the published status and its observer. | yes (state machine) |
 | `input/media.rs` | Media keys: reads a system-defined event's subtype and `data1` through `NSEvent` (the tap thread's only Objective-C call). | yes (decode, real NSEvent round trip) |
 | `selftest.rs` | `--self-test`: exercises the audio path without the key listener (cold start, rebuild while warm, hold window, second cold start). | |
-| `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`. | |
+| `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`; hops input status changes to the main queue. | |
+| `ui/onboarding.rs` | The first-run window: `Model` (when it shows and which step: explain / granted / relaunch), the window, opening Input Monitoring settings, `relaunch`. | yes (model) |
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
-| `ui/status_item.rs` | The menu bar icon and its states. | yes (state) |
+| `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). | yes (state) |
 | `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order. | |
 | `ui/menu/sound_switch.rs`, `soundpack.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
+| `ui/menu/launch_at_login.rs` | "Launch at Login" over `SMAppService.mainAppService`, behind the `LoginItem` seam; reads the real state on each menu open. | yes (toggle, view) |
+| `ui/menu/permission.rs` | The rows shown while sounds are unavailable for lack of permission, with the fix. | yes (rows) |
 
 `crates/xtask/src`: `catalog.rs` (which packs ship, in menu order), `sources/` (one adapter per
 source layout: `mechvibes.rs`, `kbsim.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),
@@ -91,7 +101,7 @@ bundle layout), `sign.rs` (ADR 0002 signing).
 | #6 Mixer, limiter, volume | `engine/mixer.rs` (+ an offline stress-render test), new `ui/menu/volume.rs` | one line in `ui/menu/mod.rs::build`; `VOLUME` setting next to the mixer; `Shared::set_master_gain` already exists |
 | #7 21 packs, picker, About | `assets/soundpacks/**`, `crates/xtask/src/sources/kbsim.rs`, `catalog.rs`, `packs.rs` (app: library of all packs, `SELECTED_PACK` setting), new `ui/menu/soundpack.rs`, `ui/menu/about.rs`, `THIRD_PARTY_NOTICES.md` | two lines in `ui/menu/mod.rs::build`; `Voicer` needs a switchable pack (e.g. an atomic pointer) in `engine/mod.rs`; the `SourceKind` enum |
 | #8 Sound options | `keys.rs`/`engine` voicer options, new `ui/menu/options.rs`; release sounds hang off `Transition::Release` in `input/mod.rs` | one line in `ui/menu/mod.rs::build`; `Play` gains per-voice pan/pitch |
-| #9 First run, permission, Launch at Login | new `ui/onboarding.rs`, `ui/menu/launch_at_login.rs`, `ui/menu/permission.rs`, `input/permission.rs` | one line each in `ui/menu/mod.rs::build`; a `NeedsPermission` state in `ui/status_item.rs`; `input::start`'s retry loop |
+| #9 First run, permission, Launch at Login (done) | new `ui/onboarding.rs`, `ui/menu/launch_at_login.rs`, `ui/menu/permission.rs`, `input/permission.rs` | one line each in `ui/menu/mod.rs::build`; a `NeedsPermission` state in `ui/status_item.rs`; `input::start`'s retry loop |
 
 ### Hot spots
 

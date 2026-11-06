@@ -18,10 +18,12 @@ cargo xtask packs        # only convert the soundpacks into target/packs
 `bundle` and `run` build a universal binary (arm64 + x86_64, joined with
 `lipo`); add `--native` to build for this Mac only, which is faster.
 
-The first time, grant **Input Monitoring** to Clicky in System Settings →
-Privacy & Security → Input Monitoring (Clicky adds itself to the list when it
-starts), then quit and reopen it. Without the permission the app runs but stays
-silent.
+The first time, Clicky shows a short window about its one permission,
+**Input Monitoring**; its button opens System Settings → Privacy & Security →
+Input Monitoring. Once you turn Clicky on there, sounds start (or the window
+offers a single Relaunch). Without the permission the app runs but stays
+silent, and its menu says how to fix it. To start over:
+`tccutil reset ListenEvent io.github.cavallinilorenzo.clicky`.
 
 Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 `cargo test`. `Clicky.app/Contents/MacOS/Clicky --self-test` checks the audio

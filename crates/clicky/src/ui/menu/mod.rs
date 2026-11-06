@@ -4,6 +4,8 @@
 
 mod about;
 mod diagnostics;
+mod launch_at_login;
+mod permission;
 mod quit;
 mod sound_switch;
 mod soundpack;
@@ -36,7 +38,8 @@ pub fn build(ui: &Rc<Ui>) -> Menu {
     soundpack::add(&mut menu); // #7: soundpack picker
     // #6: volume slider
     // #8: Key Release Sounds, Natural Variation, Spatial Stereo
-    // #9: Launch at Login (and the permission row)
+    launch_at_login::add(&mut menu); // #9: Launch at Login
+    permission::add(&mut menu); // #9: the permission rows (only while sounds are unavailable)
     about::add(&mut menu); // #7: About
     diagnostics::add(&mut menu);
     quit::add(&mut menu);

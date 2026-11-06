@@ -6,14 +6,18 @@
 //! events; `media` reads their key type. It never asks for characters, so
 //! what the user types is never seen.
 //!
-//! Permission handling here is minimal (request once, retry quietly);
-//! issue #9 owns the first-run window and revocation.
+//! The thread also supervises the Input Monitoring permission
+//! (`permission::Supervisor`): it waits without a tap while the permission is
+//! missing, drops the tap when the permission is revoked, recreates it when
+//! the permission comes back, and publishes the status for the UI. It never
+//! asks for the permission itself; the first-run window does, on a click.
 //!
 //! Derived from Rustyvibes 2 (MIT, © 2021–2026 Kunal Bagaria,
 //! https://github.com/KunalBagaria/rustyvibes-v2), `crates/rustyvibes/src/input/mod.rs`.
 
 mod ffi;
 mod media;
+pub mod permission;
 
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
@@ -22,8 +26,10 @@ use crate::diagnostics::{self, Event};
 use crate::engine::Voicer;
 use crate::keys::{KeyEvent, KeyState, LogOnce, Transition};
 
-/// How often to retry creating the tap while the permission is missing.
-const PERMISSION_RETRY: Duration = Duration::from_secs(2);
+/// How often to check the permission while there is no tap.
+const WAITING_CHECK: Duration = Duration::from_secs(1);
+/// How often to check the permission and the tap while listening.
+const LISTENING_CHECK: Duration = Duration::from_secs(3);
 
 struct TapState {
     voicer: Voicer,
@@ -33,7 +39,7 @@ struct TapState {
 }
 
 /// Starts the listener thread. It waits for the permission if needed, then
-/// runs the tap for the life of the process.
+/// runs the tap for the life of the process, following the permission.
 pub fn start(voicer: Voicer) {
     std::thread::Builder::new()
         .name("clicky-input".into())
@@ -46,20 +52,81 @@ fn run(voicer: Voicer) {
     unsafe {
         libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
     }
+    // Never freed, so it outlives every tap.
     let state = Box::into_raw(Box::new(TapState {
         voicer,
         keys: KeyState::default(),
         unrecognised: LogOnce::default(),
         tap: std::ptr::null_mut(),
     }));
-    let mask = (1u64 << ffi::kCGEventKeyDown)
-        | (1u64 << ffi::kCGEventKeyUp)
-        | (1u64 << ffi::kCGEventFlagsChanged)
-        | (1u64 << ffi::kCGEventSystemDefined);
-    let mut asked = false;
-    let tap = loop {
+    let mut supervisor = permission::Supervisor::default();
+    let mut tap: Option<Tap> = None;
+    loop {
+        let alive = tap.as_ref().map(Tap::is_enabled);
+        match supervisor.tick(permission::check(), alive) {
+            permission::Action::Wait => {}
+            permission::Action::Create => match Tap::create(state) {
+                Some(created) => {
+                    tap = Some(created);
+                    supervisor.created();
+                }
+                None => supervisor.create_failed(),
+            },
+            permission::Action::Drop => {
+                tap = None;
+                // SAFETY: the tap is gone, so its callback cannot run; this thread owns `state`.
+                unsafe {
+                    (*state).tap = std::ptr::null_mut();
+                    // Key-ups are not seen without a tap.
+                    (*state).keys.reset();
+                }
+            }
+        }
+        let status = supervisor.status();
+        if permission::publish(status) {
+            log_status(status);
+        }
+        match &tap {
+            // SAFETY: runs this thread's run loop, which delivers the tap's events.
+            Some(_) => unsafe {
+                ffi::CFRunLoopRunInMode(
+                    ffi::kCFRunLoopDefaultMode,
+                    LISTENING_CHECK.as_secs_f64(),
+                    false,
+                );
+            },
+            None => std::thread::sleep(WAITING_CHECK),
+        }
+    }
+}
+
+fn log_status(status: permission::Status) {
+    use permission::Status;
+    match status {
+        Status::Checking => {}
+        Status::Missing => diagnostics::log(Event::InputPermissionMissing),
+        Status::Listening => diagnostics::log(Event::InputTapStarted),
+        Status::Revoked => diagnostics::log(Event::InputPermissionRevoked),
+        Status::NeedsRelaunch => diagnostics::log(Event::InputNeedsRelaunch),
+    }
+}
+
+/// A live event tap on the current thread's run loop. Dropping it removes and
+/// invalidates it.
+struct Tap {
+    port: ffi::CFMachPortRef,
+    source: ffi::CFRunLoopSourceRef,
+}
+
+impl Tap {
+    /// Creates and enables the tap; `None` without the permission.
+    fn create(state: *mut TapState) -> Option<Tap> {
+        let mask = (1u64 << ffi::kCGEventKeyDown)
+            | (1u64 << ffi::kCGEventKeyUp)
+            | (1u64 << ffi::kCGEventFlagsChanged)
+            | (1u64 << ffi::kCGEventSystemDefined);
         // SAFETY: `state` is never freed, so it outlives the tap.
-        let tap = unsafe {
+        let port = unsafe {
             ffi::CGEventTapCreate(
                 ffi::kCGSessionEventTap,
                 ffi::kCGHeadInsertEventTap,
@@ -69,28 +136,45 @@ fn run(voicer: Voicer) {
                 state.cast(),
             )
         };
-        if !tap.is_null() {
-            break tap;
+        if port.is_null() {
+            return None;
         }
-        if !asked {
-            asked = true;
-            diagnostics::log(Event::InputPermissionMissing);
-            // Lists Clicky under Input Monitoring (and prompts the first time).
-            // SAFETY: no preconditions.
-            unsafe { ffi::CGRequestListenEventAccess() };
+        // SAFETY: `port` is a valid mach port; the callback runs only on this
+        // thread's run loop, so writing `state.tap` here does not race.
+        unsafe {
+            let source = ffi::CFMachPortCreateRunLoopSource(std::ptr::null(), port, 0);
+            if source.is_null() {
+                ffi::CFMachPortInvalidate(port);
+                ffi::CFRelease(port.cast_const());
+                return None;
+            }
+            (*state).tap = port;
+            ffi::CFRunLoopAddSource(ffi::CFRunLoopGetCurrent(), source, ffi::kCFRunLoopCommonModes);
+            ffi::CGEventTapEnable(port, true);
+            Some(Tap { port, source })
         }
-        std::thread::sleep(PERMISSION_RETRY);
-    };
-    // SAFETY: `tap` is a valid mach port; the source and the tap live forever.
-    unsafe {
-        (*state).tap = tap;
-        let source = ffi::CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
-        ffi::CFRunLoopAddSource(ffi::CFRunLoopGetCurrent(), source, ffi::kCFRunLoopCommonModes);
-        ffi::CGEventTapEnable(tap, true);
     }
-    diagnostics::log(Event::InputTapStarted);
-    // SAFETY: runs this thread's run loop forever.
-    unsafe { ffi::CFRunLoopRun() };
+
+    fn is_enabled(&self) -> bool {
+        // SAFETY: `port` is valid until `drop`.
+        unsafe { ffi::CGEventTapIsEnabled(self.port) }
+    }
+}
+
+impl Drop for Tap {
+    fn drop(&mut self) {
+        // SAFETY: both were created by `Tap::create` on this thread and are released once.
+        unsafe {
+            ffi::CFRunLoopRemoveSource(
+                ffi::CFRunLoopGetCurrent(),
+                self.source,
+                ffi::kCFRunLoopCommonModes,
+            );
+            ffi::CFMachPortInvalidate(self.port);
+            ffi::CFRelease(self.source.cast_const());
+            ffi::CFRelease(self.port.cast_const());
+        }
+    }
 }
 
 /// Event-tap callback. Ordinary key events take no locks and allocate nothing;
