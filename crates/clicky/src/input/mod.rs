@@ -1,8 +1,10 @@
 //! Global key listener: a listen-only `CGEventTap` on its own high-priority
 //! thread. It needs only the Input Monitoring permission, cannot change or
-//! block events, and reads exactly two things from each event: its type and
-//! its keycode (plus the auto-repeat flag of key-down events). It never asks
-//! for characters, so what the user types is never seen.
+//! block events, and reads from each event only its type, its keycode, the
+//! auto-repeat flag of key-downs and the modifier flags of flags-changed
+//! events (which modifier keys are down). Media keys arrive as system-defined
+//! events; `media` reads their key type. It never asks for characters, so
+//! what the user types is never seen.
 //!
 //! Permission handling here is minimal (request once, retry quietly);
 //! issue #9 owns the first-run window and revocation.
@@ -11,13 +13,14 @@
 //! https://github.com/KunalBagaria/rustyvibes-v2), `crates/rustyvibes/src/input/mod.rs`.
 
 mod ffi;
+mod media;
 
 use std::ffi::c_void;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::diagnostics::{self, Event};
 use crate::engine::Voicer;
-use crate::keys::{KeyEvent, KeyState};
+use crate::keys::{KeyEvent, KeyState, LogOnce, Transition};
 
 /// How often to retry creating the tap while the permission is missing.
 const PERMISSION_RETRY: Duration = Duration::from_secs(2);
@@ -25,6 +28,7 @@ const PERMISSION_RETRY: Duration = Duration::from_secs(2);
 struct TapState {
     voicer: Voicer,
     keys: KeyState,
+    unrecognised: LogOnce,
     tap: ffi::CFMachPortRef,
 }
 
@@ -45,11 +49,13 @@ fn run(voicer: Voicer) {
     let state = Box::into_raw(Box::new(TapState {
         voicer,
         keys: KeyState::default(),
+        unrecognised: LogOnce::default(),
         tap: std::ptr::null_mut(),
     }));
     let mask = (1u64 << ffi::kCGEventKeyDown)
         | (1u64 << ffi::kCGEventKeyUp)
-        | (1u64 << ffi::kCGEventFlagsChanged);
+        | (1u64 << ffi::kCGEventFlagsChanged)
+        | (1u64 << ffi::kCGEventSystemDefined);
     let mut asked = false;
     let tap = loop {
         // SAFETY: `state` is never freed, so it outlives the tap.
@@ -87,7 +93,14 @@ fn run(voicer: Voicer) {
     unsafe { ffi::CFRunLoopRun() };
 }
 
-/// Event-tap callback. No allocation and no locks on the key path.
+/// Event-tap callback. Ordinary key events take no locks and allocate nothing;
+/// see `media` for system-defined events.
+///
+/// PRIVACY (for review): from each event this reads only its type, the
+/// keycode, the auto-repeat flag and the modifier flags, and for media keys
+/// the key type in `data1` (`media::read`). It never calls
+/// `CGEventKeyboardGetUnicodeString` or anything else that yields characters,
+/// and it never logs a keycode.
 unsafe extern "C" fn tap_callback(
     _proxy: ffi::CGEventTapProxy,
     kind: u32,
@@ -103,6 +116,8 @@ unsafe extern "C" fn tap_callback(
         ffi::kCGEventTapDisabledByTimeout | ffi::kCGEventTapDisabledByUserInput => {
             // SAFETY: `state.tap` is the live tap.
             unsafe { ffi::CGEventTapEnable(state.tap, true) };
+            // Key-ups may have been missed while the tap was off.
+            state.keys.reset();
             let cause =
                 if kind == ffi::kCGEventTapDisabledByTimeout { "timeout" } else { "user input" };
             diagnostics::log(Event::InputTapReenabled { cause });
@@ -113,11 +128,23 @@ unsafe extern "C" fn tap_callback(
             autorepeat: field(ffi::kCGKeyboardEventAutorepeat) != 0,
         }),
         ffi::kCGEventKeyUp => Some(KeyEvent::Up { keycode: keycode() }),
-        ffi::kCGEventFlagsChanged => Some(KeyEvent::FlagsChanged { keycode: keycode() }),
+        ffi::kCGEventFlagsChanged => Some(KeyEvent::FlagsChanged {
+            keycode: keycode(),
+            // SAFETY: `event` is a valid CGEvent for this callback.
+            flags: unsafe { ffi::CGEventGetFlags(event) },
+        }),
+        ffi::kCGEventSystemDefined => media::read(event),
         _ => None,
     };
-    if let Some(keycode) = key_event.and_then(|e| state.keys.press(e)) {
-        state.voicer.press(keycode);
+    let Some(key_event) = key_event else { return event };
+    if let Some(kind) = state.unrecognised.first(&key_event) {
+        // At most once per kind per launch; the kind never names the key.
+        diagnostics::log(Event::UnrecognisedInput { kind });
+    }
+    match state.keys.handle(key_event, Instant::now()) {
+        Some(Transition::Press(keycode)) => state.voicer.press(keycode),
+        // Release sounds are issue #8.
+        Some(Transition::Release(_)) | None => {}
     }
     event
 }

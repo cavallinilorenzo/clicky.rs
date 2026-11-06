@@ -25,6 +25,8 @@ pub const kCGEventTapOptionListenOnly: u32 = 1;
 pub const kCGEventKeyDown: u32 = 10;
 pub const kCGEventKeyUp: u32 = 11;
 pub const kCGEventFlagsChanged: u32 = 12;
+/// `NX_SYSDEFINED`: media keys (subtype 8) among others. No public CG constant.
+pub const kCGEventSystemDefined: u32 = 14;
 pub const kCGEventTapDisabledByTimeout: u32 = 0xFFFF_FFFE;
 pub const kCGEventTapDisabledByUserInput: u32 = 0xFFFF_FFFF;
 pub const kCGKeyboardEventAutorepeat: u32 = 8;
@@ -42,6 +44,8 @@ unsafe extern "C" {
     ) -> CFMachPortRef;
     pub fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
     pub fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
+    /// The modifier flags (which modifier keys are down). No characters.
+    pub fn CGEventGetFlags(event: CGEventRef) -> u64;
     pub fn CGRequestListenEventAccess() -> bool;
 }
 
