@@ -89,4 +89,9 @@ impl MenuDelegate {
         // SAFETY: NSObject's designated initialiser.
         unsafe { msg_send![super(this), init] }
     }
+
+    /// Runs the closure, as AppKit does when the menu is about to open.
+    pub fn will_open(&self) {
+        (self.ivars().will_open)();
+    }
 }

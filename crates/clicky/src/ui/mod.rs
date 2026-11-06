@@ -51,6 +51,30 @@ pub fn run(shared: &'static Shared, store: Store) {
     app.run();
 }
 
+/// `Clicky --menu`: builds the real menu, as at launch, without running the
+/// app, and prints it ([`menu::describe`]). Writes no setting and listens to
+/// no key. For tests and the verifier.
+pub fn print_menu() {
+    let mtm = MainThreadMarker::new().expect("Clicky must start on the main thread");
+    NSApplication::sharedApplication(mtm)
+        .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    let store = Store::standard();
+    let shared: &'static Shared =
+        Box::leak(Box::new(Shared::new(store.get(&crate::engine::SOUNDS_ON))));
+    let ui = Rc::new(Ui {
+        mtm,
+        shared,
+        store,
+        status: OnceCell::new(),
+        onboarding: onboarding::Onboarding::default(),
+    });
+    let menu = menu::build(&ui);
+    menu.refresh();
+    for line in menu::describe(&menu.menu) {
+        println!("{line}");
+    }
+}
+
 fn launch(mtm: MainThreadMarker, shared: &'static Shared, store: Store) {
     let ui = Rc::new(Ui {
         mtm,

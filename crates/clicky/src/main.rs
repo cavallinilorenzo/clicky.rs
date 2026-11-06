@@ -3,6 +3,7 @@
 
 mod app;
 mod audio;
+mod bench;
 mod diagnostics;
 mod engine;
 mod input;
@@ -13,15 +14,23 @@ mod settings;
 mod ui;
 
 fn main() {
-    match std::env::args().nth(1).as_deref() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
         Some("--version") => println!("Clicky {}", env!("CARGO_PKG_VERSION")),
         Some("--self-test") => {
-            let audible = std::env::args().any(|a| a == "--audible");
+            let audible = args.iter().any(|a| a == "--audible");
             if let Err(e) = selftest::run(audible) {
                 eprintln!("self-test failed: {e}");
                 std::process::exit(1);
             }
         }
+        Some("--bench-typing") => {
+            if let Err(e) = bench::Plan::parse(&args[1..]).and_then(|plan| bench::run(&plan)) {
+                eprintln!("bench failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        Some("--menu") => ui::print_menu(),
         // Anything else (including LaunchServices' legacy -psn_ argument) starts the app.
         _ => app::run(),
     }
