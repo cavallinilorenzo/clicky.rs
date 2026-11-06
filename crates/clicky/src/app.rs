@@ -38,7 +38,7 @@ pub fn run() {
         eprintln!("clicky: {detail}");
         diagnostics::log(Event::Error { context: "soundpack", detail });
     }
-    match chosen {
+    let voicer = match chosen {
         Some((_, pack)) => {
             diagnostics::log(Event::SoundpackLoaded {
                 id: pack.meta.id.clone(),
@@ -51,7 +51,7 @@ pub fn run() {
                     diagnostics::log(Event::Error { context: "preview", detail: e.to_string() })
                 }
             }
-            input::start(Voicer::new(pack, producer, shared, kick));
+            Voicer::new(pack, producer, shared, kick)
         }
         None => {
             let searched: Vec<String> =
@@ -59,8 +59,13 @@ pub fn run() {
             let detail = format!("no soundpack found in {}", searched.join(", "));
             eprintln!("clicky: {detail}");
             diagnostics::log(Event::Error { context: "soundpack", detail });
+            // No current pack, so it plays nothing.
+            Voicer::sharing(producer, shared, kick)
         }
-    }
+    };
+    // Even without a soundpack: the listener also supervises the permission,
+    // which the menu and the first-run window follow (never stuck at Checking).
+    input::start(voicer);
 
     ui::run(shared, store);
 }
