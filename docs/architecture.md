@@ -67,8 +67,8 @@ input (CGEventTap, listen-only)            │
 
 | Module | What it does | Pure / tested |
 |---|---|---|
-| `main.rs` | Arguments (`--version`, `--self-test`), then `app::run`. | |
-| `app.rs` | Launch wiring: settings, sleep policy, soundpack, audio, input, UI. | |
+| `main.rs` | Arguments (`--version`, `--self-test`, `--bench-typing`, `--menu`), then `app::run`. | |
+| `app.rs` | Launch wiring: settings (`restored`: on/off, volume, sound options), sleep policy, soundpack, audio, input, UI. | yes (`restored`, across a real relaunch) |
 | `settings.rs` | Typed `Setting<T>` + `Store` over `NSUserDefaults` (in-memory backend for tests). Each feature declares its own `Setting` const next to its code. | yes |
 | `diagnostics.rs` | The optional log: the `Event` enum (no key data, by construction), line formatting, the file logger. `LOG_ENABLED` setting. | yes |
 | `keys.rs` | `KeyEvent`, `KeyState` (press/release tracking: held-key set, auto-repeat suppression, modifiers from flags-changed and device bits, Caps Lock toggles, media keys), `Transition` (both played by `Voicer::key`), `press_clip` (own recording → key class → default clip), `LogOnce` (unrecognised input logged once per kind). | yes |
@@ -93,11 +93,12 @@ input (CGEventTap, listen-only)            │
 | `input/permission.rs` | Input Monitoring: `check` (`IOHIDCheckAccess`), `request` (from a click only), `Supervisor` (permission × tap → action and `Status`), the published status and its observer. | yes (state machine) |
 | `input/media.rs` | Media keys: reads a system-defined event's subtype and `data1` through `NSEvent` (the tap thread's only Objective-C call). | yes (decode, real NSEvent round trip) |
 | `selftest.rs` | `--self-test`: exercises the audio path without the key listener (cold start, rebuild while warm, hold window, second cold start). | |
+| `bench.rs` | `--bench-typing`: synthetic typing at 10 keys/s through `KeyState` → `Voicer` → ring → real output with the real hold window, idle phases, a rebuild per cycle; reports the process's CPU, idle wakeups and footprint per phase. | yes (arguments) |
 | `ui/mod.rs` | `Ui` (what sections share), app delegate, `run`; hops input status changes to the main queue. | |
 | `ui/onboarding.rs` | The first-run window: `Model` (when it shows and which step: explain / granted / relaunch), the window, opening Input Monitoring settings, `relaunch`. | yes (model) |
 | `ui/target.rs` | `ActionTarget` / `MenuDelegate`: Objective-C shims that call Rust closures, so sections never add methods to a shared class. | |
 | `ui/status_item.rs` | The menu bar icon and its states (on, off, needs permission). | yes (state) |
-| `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order. | |
+| `ui/menu/mod.rs` | `MenuBuilder` and `build`, which lists the sections in menu order; `describe` prints the built menu for `--menu`. | yes (`tests/menu_order.rs` runs `--menu`) |
 | `ui/menu/sound_switch.rs`, `soundpack.rs`, `volume.rs`, `about.rs`, `diagnostics.rs`, `quit.rs` | One file per menu section. `soundpack.rs`: grouped picker, `choose` (switch + save). `about.rs`: About panel, `credits_text`. | partly (`choose`, `credits_text`) |
 | `ui/menu/options.rs` | Key Release Sounds, Natural Variation, Spatial Stereo checkboxes after the volume slider; Key Release Sounds greyed out with "This soundpack has no release sounds" (subtitle on macOS 14.4+, note row before; tooltip) for packs without them (`Entry::has_release`), refreshed on each menu open. | yes (`view`, `SoundOption::set`) |
 | `ui/menu/launch_at_login.rs` | "Launch at Login" over `SMAppService.mainAppService`, behind the `LoginItem` seam; reads the real state on each menu open. | yes (toggle, view) |
@@ -107,7 +108,8 @@ input (CGEventTap, listen-only)            │
 source layout: `mechvibes.rs`, `kbsim.rs`), `decode.rs`, `dsp.rs` (trim, normalise, dither),
 `loudness.rs` (K-weighted 100 ms attack loudness), `packs.rs` (pipeline + invariants, incl. the
 all-21-packs loudness/onset test), `bundle.rs` (universal build, Info.plist,
-bundle layout), `sign.rs` (ADR 0002 signing).
+bundle layout), `sign.rs` (ADR 0002 signing), `audit.rs` (run by `bundle`: no networking or
+typed-text APIs in the binary, no network entitlements, macOS 13.0 on every slice).
 
 ## Where each follow-up ticket works
 
