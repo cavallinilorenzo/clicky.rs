@@ -5,6 +5,7 @@
 mod diagnostics;
 mod quit;
 mod sound_switch;
+mod volume;
 
 use std::rc::Rc;
 
@@ -32,7 +33,7 @@ pub fn build(ui: &Rc<Ui>) -> Menu {
     let mut menu = MenuBuilder::new(ui);
     sound_switch::add(&mut menu);
     // #7: soundpack picker
-    // #6: volume slider
+    volume::add(&mut menu); // #6: volume slider
     // #8: Key Release Sounds, Natural Variation, Spatial Stereo
     // #9: Launch at Login (and the permission row)
     // #7: About
